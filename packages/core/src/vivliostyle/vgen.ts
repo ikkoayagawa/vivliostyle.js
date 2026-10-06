@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2013 Google, Inc.
  * Copyright 2015 Daishinsha Inc.
@@ -4317,7 +4319,16 @@ export class DefaultClientLayout implements Vtree.ClientLayout {
     ) {
       // getBoundingClientRect() returns 0,0,0,0 for WBR element (Chrome)
       // (Fix for issue #802)
-      return rect;
+      // Return a mutable value. Layout callers adjust ClientRect edges, while
+      // Chromium's DOMRectReadOnly properties have getter-only accessors.
+      return {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+      } as Vtree.ClientRect;
     }
     const layoutBoxRect = this.layoutBox.getBoundingClientRect();
     return this.subtractOffsets(rect, layoutBoxRect);

@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2013 Google, Inc.
  * Copyright 2015 Daishinsha Inc.

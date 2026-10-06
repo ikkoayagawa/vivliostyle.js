@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2015 Daishinsha Inc.
  * Copyright 2018 Vivliostyle Foundation
@@ -26,8 +28,24 @@ import * as OPS from "./ops";
 import * as Profile from "./profile";
 import * as Toc from "./toc";
 import { ErrorInfo } from "./logging";
+import { MemoryDocumentSource, prepareMemoryDocument } from "./memory-document";
 
 export interface Payload {
+  /** Present on previewdisplay, after the latest edited page is visible. */
+  revision?: number;
+  reusedPages?: number;
+  reusedPrefixPages?: number;
+  reusedSuffixPages?: number;
+  elapsedMs?: number;
+  loadMs?: number;
+  cacheMs?: number;
+  editOffset?: number | null;
+  cacheResults?: {
+    url: string;
+    pages: number;
+    reason?: string;
+    blockers?: string[];
+  }[];
   type: string;
   internal: boolean;
   href: string;
@@ -41,7 +59,19 @@ export interface Payload {
   docTitle: string;
   fraction: number;
   pages: number;
+  /** Display-intent generation echoed by focused speculative pagination. */
+  displayIntent?: number;
+  /** 0-indexed page selected by focused speculative pagination. */
+  targetEpage?: number;
+  /** Number of papers in the atomically published display unit. */
+  paperCount?: number;
+  /** Whether Core resolved the requested focused fragment before pagination. */
+  targetResolved?: boolean;
+  /** Elapsed time when a focused task reached its terminal boundary. */
+  terminalMs?: number;
 }
+
+export type PaginationMode = "complete" | "target-display-unit";
 
 const PageProgression = Constants.PageProgression;
 
@@ -90,6 +120,10 @@ export type CoreViewerOptions = {
   defaultPaperSize?: { width: number; height: number };
   allowScripts?: boolean;
   pixelRatio?: number;
+  /** Explicit focused-pagination contract; does not change renderAllPages semantics. */
+  paginationMode?: PaginationMode;
+  /** Client-owned navigation/display generation for focused results. */
+  displayIntent?: number;
 };
 
 function getDefaultViewerOptions(): CoreViewerOptions {
@@ -104,6 +138,8 @@ function getDefaultViewerOptions(): CoreViewerOptions {
     defaultPaperSize: undefined,
     allowScripts: true,
     pixelRatio: 8,
+    paginationMode: "complete",
+    displayIntent: 0,
   };
 }
 
@@ -140,10 +176,16 @@ function convertViewerOptions(options: CoreViewerOptions): object {
  */
 export type DocumentOptions = {
   documentObject?: Document;
+  /** Client-owned generation echoed on asynchronous viewer events. */
+  clientRevision?: number;
   fragment?: string;
   authorStyleSheet?: { url?: string; text?: string }[];
   userStyleSheet?: { url?: string; text?: string }[];
   cmykReserveMapUrl?: string;
+  /** Internal preview-cache baseline supplied by another isolated CoreViewer. */
+  previewSnapshotSeed?: AdaptiveViewer.PreviewSnapshotSeed;
+  /** Allow incremental page reuse from previewSnapshotSeed on an initial load. */
+  reusePages?: boolean;
 };
 
 /**
@@ -169,6 +211,37 @@ export type SingleDocumentOptions =
  * Vivliostyle Viewer class.
  */
 export class CoreViewer {
+  private lastLoadCommand: Base.JSON | null = null;
+  private memoryObjectURLs: string[] = [];
+
+  /** Supersede an editing update without waiting for background pagination. */
+  cancelPreviewUpdate(): void {
+    this.adaptViewer_.supersedePreviewUpdate();
+  }
+
+  /** Reload the current source, retaining the viewer and prioritizing its location.
+   * reusePages is only valid for manuscript-only updates with unchanged resources.
+   */
+  refreshDocument(
+    options: {
+      reusePages?: boolean;
+      changedUrls?: string[];
+      clientRevision?: number;
+      fragment?: string | null;
+    } = {},
+  ): void {
+    if (!this.lastLoadCommand) return;
+    const revision = this.adaptViewer_.supersedePreviewUpdate();
+    this.adaptViewer_.sendCommand({
+      ...this.lastLoadCommand,
+      ...convertViewerOptions(this.options),
+      fragment: options.fragment ?? null,
+      previewRevision: revision,
+      previewClientRevision: options.clientRevision,
+      reusePages: !!options.reusePages,
+      previewChangedUrls: options.changedUrls || [],
+    });
+  }
   private initialized: boolean = false;
   private adaptViewer_: AdaptiveViewer.AdaptiveViewer;
   private options: CoreViewerOptions;
@@ -290,6 +363,68 @@ export class CoreViewer {
     );
   }
 
+  /** Load HTML and its declared resources without fetching the HTML itself. */
+  loadMemoryDocument(
+    source: MemoryDocumentSource,
+    opt_documentOptions?: Omit<DocumentOptions, "documentObject">,
+    opt_viewerOptions?: CoreViewerOptions,
+  ): void {
+    const prepared = prepareMemoryDocument(
+      source,
+      this.settings.window || window,
+    );
+    this.memoryObjectURLs.push(...prepared.objectURLs);
+    this.loadDocument(
+      source.url,
+      {
+        ...opt_documentOptions,
+        documentObject: prepared.document,
+        clientRevision: source.revision,
+      },
+      opt_viewerOptions,
+    );
+  }
+
+  /** Replace the current in-memory HTML and run the normal preview refresh. */
+  refreshMemoryDocument(
+    source: MemoryDocumentSource,
+    options: {
+      reusePages?: boolean;
+      changedUrls?: string[];
+      fragment?: string | null;
+    } = {},
+  ): void {
+    if (!this.lastLoadCommand) {
+      this.loadMemoryDocument(source);
+      return;
+    }
+    const prepared = prepareMemoryDocument(
+      source,
+      this.settings.window || window,
+    );
+    this.memoryObjectURLs.push(...prepared.objectURLs);
+    this.lastLoadCommand = {
+      ...this.lastLoadCommand,
+      url: convertSingleDocumentOptions(source.url),
+      document: prepared.document,
+      previewClientRevision: source.revision,
+      // A fork seed is consumed only by the first isolated load. Subsequent
+      // refreshes must reuse this viewer's own last successfully terminated
+      // focused result rather than repeatedly going back to the old commit.
+      previewSnapshotSeed: undefined,
+    };
+    this.refreshDocument({ ...options, clientRevision: source.revision });
+  }
+
+  /** Revoke blob URLs retained by in-memory resources when the viewer is done. */
+  disposeMemoryResources(): void {
+    const resourceURL = (
+      (this.settings.window || window) as unknown as { URL: typeof URL }
+    ).URL;
+    for (const url of this.memoryObjectURLs.splice(0))
+      resourceURL.revokeObjectURL(url);
+  }
+
   /**
    * Load an EPUB/WebPub publication.
    */
@@ -362,9 +497,16 @@ export class CoreViewer {
         authorStyleSheet: authorStyleSheet,
         userStyleSheet: userStyleSheet,
         cmykReserveMapUrl: documentOptions["cmykReserveMapUrl"],
+        previewSnapshotSeed: documentOptions["previewSnapshotSeed"],
+        reusePages: !!documentOptions["reusePages"],
       },
       convertViewerOptions(this.options),
     );
+    if (typeof documentOptions.clientRevision === "number") {
+      command["previewRevision"] = this.adaptViewer_.supersedePreviewUpdate();
+      command["previewClientRevision"] = documentOptions.clientRevision;
+    }
+    this.lastLoadCommand = command;
     if (this.initialized) {
       this.adaptViewer_.sendCommand(command);
     } else {
@@ -513,6 +655,78 @@ export class CoreViewer {
       return {};
     }
     return opfView.cmykStore.toJSON();
+  }
+
+  /**
+   * Returns the DOM container element for the page at the given epage
+   * (0-indexed). Searches currently laid-out pages first, then suffix
+   * convergence candidates, then the snapshot of the previous revision.
+   * Returns null when no container is available (e.g. before the first render).
+   *
+   * Intended for preview clients that need to display a live or historical
+   * page container while a re-render is in progress.
+   */
+  getPageContainerForEpage(epage: number): HTMLElement | null {
+    return this.adaptViewer_.getPageContainerForEpage(epage);
+  }
+
+  /** Return a page from the last fully committed client revision. */
+  getLatestCommittedPageContainerForEpage(epage: number): HTMLElement | null {
+    return this.adaptViewer_.getLatestCommittedPageContainerForEpage(epage);
+  }
+
+  /** Return a cache seed that another isolated preview viewer can safely fork. */
+  getCommittedPreviewSnapshotSeed(): AdaptiveViewer.PreviewSnapshotSeed | null {
+    return this.adaptViewer_.getCommittedPreviewSnapshotSeed();
+  }
+
+  /** Clone a complete committed cache into this viewer's document. */
+  preparePreviewSnapshotSeed(
+    seed: AdaptiveViewer.PreviewSnapshotSeed,
+  ): AdaptiveViewer.PreviewSnapshotSeed {
+    return this.adaptViewer_.preparePreviewSnapshotSeed(seed);
+  }
+
+  /** Display a working or committed page/spread while preview layout runs. */
+  showPreviewPageForEpage(
+    epage: number,
+    options: { zoom?: number; pageViewMode?: AdaptiveViewer.PageViewMode } = {},
+  ) {
+    return this.adaptViewer_.showPreviewPageForEpage(epage, options);
+  }
+
+  /** Return the page/spread selected by a completed focused layout. */
+  getCurrentPreviewDisplayUnit() {
+    return this.adaptViewer_.getCurrentPreviewDisplayUnit();
+  }
+
+  /** Return a page only when the caller's committed revision still matches. */
+  getCommittedPageContainerForEpage(
+    epage: number,
+    clientRevision: number,
+  ): HTMLElement | null {
+    return this.adaptViewer_.getCommittedPageContainerForEpage(
+      epage,
+      clientRevision,
+    );
+  }
+
+  /**
+   * Returns the 0-indexed epage of the page that contains the given source
+   * offset within the spine item identified by url. The offset is the
+   * character position within the spine item's source document (as set on
+   * Vtree.Page.offset during layout).
+   *
+   * The search is performed over currently laid-out pages in spineItems. If
+   * the target offset has not yet been laid out (e.g. during an incremental
+   * update that has not reached the target page), returns null.
+   *
+   * Intended for preview clients that need to navigate to the page containing
+   * a specific source location (e.g. the editor cursor position) without
+   * inserting anchor elements into the HTML.
+   */
+  getEpageForSourceOffset(url: string, offset: number): number | null {
+    return this.adaptViewer_.getEpageForSourceOffset(url, offset);
   }
 }
 

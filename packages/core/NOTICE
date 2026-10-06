@@ -1,0 +1,19 @@
+Ogenkou Core fork
+
+Copyright notices in the original source files remain applicable.
+This fork contains modifications for in-memory documents, page reuse, Committed/Working presentations, focused pagination and update scheduling.
+Modification notice prepared 2026-10-06.
+Based on fork master a90d13def0817ef4c67a6780cdbad80e460068db (Core 2.45.2).
+Core implementation files differing from that master:
+vivliostyle\adaptive-viewer.ts
+vivliostyle\core-viewer.ts
+vivliostyle\epub.ts
+vivliostyle\layout-helper.ts
+vivliostyle\layout.ts
+vivliostyle\memory-document.ts
+vivliostyle\preview-cache.ts
+vivliostyle\preview-diff.ts
+vivliostyle\preview-presentation.ts
+vivliostyle\text-polyfill.ts
+vivliostyle\vgen.ts
+vivliostyle.ts

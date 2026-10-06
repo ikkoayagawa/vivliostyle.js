@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /*
  * Copyright 2018 Vivliostyle Foundation
  *
@@ -20,5 +22,6 @@ export * from "./vivliostyle/constants";
 export * from "./vivliostyle/plugin";
 export * from "./vivliostyle/profile";
 export * from "./vivliostyle/core-viewer";
+export * from "./vivliostyle/memory-document";
 export * from "./vivliostyle/print";
 export * from "./vivliostyle/assets";

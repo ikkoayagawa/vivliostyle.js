@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2021 Vivliostyle Foundation
  *
@@ -404,7 +406,9 @@ class TextSpacingPolyfill {
       if (textArr.length > 1) {
         const lastIndex = textArr.length - 1;
         for (let i = 0; i < lastIndex; i++) {
-          node.before(document.createTextNode(textArr[i]));
+          // Memory manuscripts and isolated lanes own different Documents.
+          // Avoid adopting each split node from the live viewer document.
+          node.before(element.ownerDocument.createTextNode(textArr[i]));
         }
         node.textContent = textArr[lastIndex];
       }
@@ -853,7 +857,6 @@ class TextSpacingPolyfill {
     vertical: boolean,
   ): number {
     const text = textNode.textContent;
-    const document = textNode.ownerDocument;
     let columnOver = 0;
 
     function isAtStartOfLine(): boolean {
