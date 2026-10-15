@@ -1,5 +1,7 @@
 # Vivliostyle Core
 
+> このforkはGitのsubmoduleから取得してビルドする構成です。内部のパッケージ名は `@vivliostyle/core`、版は `2.45.2-ogenkou.1` です。編集プレビュー用のAPIとビルド手順は [forkの変更内容](../../CHANGES.md) を参照してください。以下は上流のVivliostyle Coreの案内です。
+
 [![npm][npm]][npm-url]
 [![Install Size][size]][size-url]
 [![Downloads][downloads]][downloads-url]

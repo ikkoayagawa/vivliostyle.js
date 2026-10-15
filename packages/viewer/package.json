@@ -18,7 +18,7 @@
     "test": "echo 'Tests for Vivliostyle Viewer has been disabled. See #618.'"
   },
   "dependencies": {
-    "@vivliostyle/core": "^2.45.2",
+    "@vivliostyle/core": "2.45.2-ogenkou.1",
     "i18next-ko": "^3.0.1",
     "knockout": "^3.5.0"
   },
@@ -71,9 +71,6 @@
     "lib/resources",
     "docs/index.html"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/vivliostyle/vivliostyle.js.git",
@@ -89,5 +86,6 @@
   "license": "AGPL-3.0",
   "engines": {
     "node": ">=20"
-  }
+  },
+  "private": true
 }

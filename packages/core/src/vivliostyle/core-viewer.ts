@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2015 Daishinsha Inc.
  * Copyright 2018 Vivliostyle Foundation
@@ -26,8 +28,65 @@ import * as OPS from "./ops";
 import * as Profile from "./profile";
 import * as Toc from "./toc";
 import { ErrorInfo } from "./logging";
+import { MemoryDocumentSource, prepareMemoryDocument } from "./memory-document";
+import { SourceMappedPresentation } from "./source-presentation";
+import { serializeCompletedPaper, type CompletedPaperPacket } from "./completed-paper";
+import { registerSourceTexts } from "./source-map";
+import {
+  PortableSeedError,
+  serializePortableSeed,
+  restorePortableSeed,
+  restorePortableSourceBoundaries,
+  validatePortableSeed,
+  type PortablePreviewSeed,
+  type PortableSeedImportRequest,
+} from "./portable-seed";
+
+export type PortableSeedImportOptions = {
+  /** Exact Core build + CSS/font/resource identity shared by producer and receiver. */
+  compatibilityKey: string;
+  documentOptions?: Pick<
+    DocumentOptions,
+    "fragment" | "authorStyleSheet" | "userStyleSheet" | "cmykReserveMapUrl"
+  >;
+  /** Default true. false retains the old one-page initialization for comparisons. */
+  skipInitialPage?: boolean;
+  signal?: AbortSignal;
+  /** Defaults to 120 seconds. Must be finite and positive. */
+  timeoutMs?: number;
+};
+
+export type PreviewResourceOptions = {
+  signal?: AbortSignal;
+  /** Defaults to 30 seconds; failed resources count as settled. */
+  timeoutMs?: number;
+  /** Wait for all completed paper, rather than just the selected page/spread. */
+  complete?: boolean;
+};
+
+export type PortableSeedImportResult = {
+  seed: AdaptiveViewer.PreviewSnapshotSeed;
+  prepareMs: number;
+  hydrateMs: number;
+  initialPagesTypeset: number;
+};
 
 export interface Payload {
+  /** Present on previewdisplay, after the latest edited page is visible. */
+  revision?: number;
+  reusedPages?: number;
+  reusedPrefixPages?: number;
+  reusedSuffixPages?: number;
+  elapsedMs?: number;
+  loadMs?: number;
+  cacheMs?: number;
+  editOffset?: number | null;
+  cacheResults?: {
+    url: string;
+    pages: number;
+    reason?: string;
+    blockers?: string[];
+  }[];
   type: string;
   internal: boolean;
   href: string;
@@ -41,7 +100,19 @@ export interface Payload {
   docTitle: string;
   fraction: number;
   pages: number;
+  /** Display-intent generation echoed by focused speculative pagination. */
+  displayIntent?: number;
+  /** 0-indexed page selected by focused speculative pagination. */
+  targetEpage?: number;
+  /** Number of papers in the atomically published display unit. */
+  paperCount?: number;
+  /** Whether Core resolved the requested focused fragment before pagination. */
+  targetResolved?: boolean;
+  /** Elapsed time when a focused task reached its terminal boundary. */
+  terminalMs?: number;
 }
+
+export type PaginationMode = "complete" | "target-display-unit";
 
 const PageProgression = Constants.PageProgression;
 
@@ -90,6 +161,10 @@ export type CoreViewerOptions = {
   defaultPaperSize?: { width: number; height: number };
   allowScripts?: boolean;
   pixelRatio?: number;
+  /** Explicit focused-pagination contract; does not change renderAllPages semantics. */
+  paginationMode?: PaginationMode;
+  /** Client-owned navigation/display generation for focused results. */
+  displayIntent?: number;
 };
 
 function getDefaultViewerOptions(): CoreViewerOptions {
@@ -104,6 +179,8 @@ function getDefaultViewerOptions(): CoreViewerOptions {
     defaultPaperSize: undefined,
     allowScripts: true,
     pixelRatio: 8,
+    paginationMode: "complete",
+    displayIntent: 0,
   };
 }
 
@@ -140,10 +217,19 @@ function convertViewerOptions(options: CoreViewerOptions): object {
  */
 export type DocumentOptions = {
   documentObject?: Document;
+  /** Client-owned generation echoed on asynchronous viewer events. */
+  clientRevision?: number;
   fragment?: string;
   authorStyleSheet?: { url?: string; text?: string }[];
   userStyleSheet?: { url?: string; text?: string }[];
   cmykReserveMapUrl?: string;
+  /** Internal preview-cache baseline supplied by another isolated CoreViewer. */
+  previewSnapshotSeed?: AdaptiveViewer.PreviewSnapshotSeed;
+  /** Allow incremental page reuse from previewSnapshotSeed on an initial load. */
+  reusePages?: boolean;
+  /** Focused paper selection, independent of pageViewMode and layout preferences.
+   * Effective only with paginationMode: "target-display-unit". */
+  focusedDisplayMode?: "singlePage" | "spread";
 };
 
 /**
@@ -169,6 +255,213 @@ export type SingleDocumentOptions =
  * Vivliostyle Viewer class.
  */
 export class CoreViewer {
+  private lastLoadCommand: Base.JSON | null = null;
+  private memoryObjectURLs: string[] = [];
+  private readonly memoryResourceLeases = new Map<string, number>();
+  private readonly deferredResourceReleases = new Set<string>();
+  private cancelPortableImport: ((error: Error) => void) | null = null;
+  private previewResourceEpoch = 0;
+  private importedPortableSeed: AdaptiveViewer.PreviewSnapshotSeed | null =
+    null;
+
+  private assertMutablePortableViewer(): void {
+    if (this.cancelPortableImport || this.importedPortableSeed)
+      throw new PortableSeedError(
+        "ownership",
+        "A portable seed donor cannot be reloaded or reconfigured; use a separate viewer",
+      );
+  }
+
+  /** Export a detached, structured-cloneable, fully committed body-flow seed. */
+  exportCommittedSeed(compatibilityKey: string): PortablePreviewSeed {
+    const seed = this.importedPortableSeed || this.getCommittedPreviewSnapshotSeed();
+    this.assertSnapshotResourcesReady(seed);
+    return serializePortableSeed(
+      seed,
+      compatibilityKey,
+    );
+  }
+
+  /** Check a packet against this donor without modifying its source or pages. */
+  validateCommittedSeed(
+    payload: PortablePreviewSeed,
+    compatibilityKey: string,
+  ): void {
+    restorePortableSeed(
+      this.adaptViewer_.opfView,
+      this.settings.window || window,
+      payload,
+      compatibilityKey,
+      false,
+    );
+  }
+
+  /** Import into a new, dedicated donor viewer. Source/CSS/fonts are initialized,
+   * but the default path does not typeset any pages. Keep this viewer and its
+   * resources alive until all consumers of the returned seed are finished.
+   * Transport and choosing when to import remain the caller's responsibility.
+   */
+  importCommittedSeed(
+    payload: PortablePreviewSeed,
+    options: PortableSeedImportOptions,
+  ): Promise<PortableSeedImportResult> {
+    return new Promise((resolve, reject) => {
+      validatePortableSeed(payload, options?.compatibilityKey);
+      if (this.initialized || this.cancelPortableImport)
+        throw new PortableSeedError(
+          "ownership",
+          "Portable import requires a new dedicated viewer",
+        );
+      const timeoutMs = options.timeoutMs ?? 120000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+        throw new PortableSeedError(
+          "options",
+          "Invalid portable import timeout",
+        );
+      if (options.signal?.aborted)
+        throw new DOMException("Portable import aborted", "AbortError");
+      const win = this.settings.window || window;
+      let restored: Omit<
+        PortableSeedImportResult,
+        "initialPagesTypeset"
+      > | null = null;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener("focusedterminal", onDone);
+        options.signal?.removeEventListener("abort", onAbort);
+        this.cancelPortableImport = null;
+        // Do not retain a completed packet/callback in a reusable load command.
+        if (this.lastLoadCommand)
+          this.lastLoadCommand["portableSeedImport"] = undefined;
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        this.adaptViewer_.supersedePreviewUpdate();
+        reject(error);
+      };
+      const onAbort = () =>
+        fail(new DOMException("Portable import aborted", "AbortError"));
+      const onDone = (event: Payload) => {
+        if (event.revision !== payload.clientRevision || settled) return;
+        if (!restored || !this.getCurrentPreviewDisplayUnit()) {
+          fail(
+            new PortableSeedError(
+              "display",
+              "Imported display unit did not become ready",
+            ),
+          );
+          return;
+        }
+        settled = true;
+        this.importedPortableSeed = restored.seed;
+        const result = {
+          ...restored,
+          initialPagesTypeset: this.adaptViewer_.opfView.typesetPageCount,
+        };
+        cleanup();
+        resolve(result);
+      };
+      this.cancelPortableImport = fail;
+      this.addListener("focusedterminal", onDone);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(
+        () =>
+          fail(new PortableSeedError("timeout", "Portable import timed out")),
+        timeoutMs,
+      );
+      try {
+        const saved = payload.snapshots[0];
+        const source = prepareMemoryDocument(
+          {
+            url: saved.url,
+            html: saved.sourceHtml,
+            revision: payload.clientRevision,
+            resources: [],
+          },
+          win,
+        );
+        if (saved.hasSplitTextNodes)
+          restorePortableSourceBoundaries(
+            source.document.documentElement,
+            saved.nodeSignatures,
+          );
+        if (saved.sourceTexts)
+          registerSourceTexts(
+            source.document,
+            saved.sourceTexts,
+            payload.clientRevision,
+          );
+        this.memoryObjectURLs.push(...source.objectURLs);
+        this.loadDocumentOrPublication(
+          saved.url,
+          null,
+          {
+            ...options.documentOptions,
+            documentObject: source.document,
+            clientRevision: payload.clientRevision,
+          },
+          {
+            autoResize: false,
+            allowScripts: false,
+            renderAllPages: false,
+            paginationMode: "target-display-unit",
+            pageViewMode: AdaptiveViewer.PageViewMode.SINGLE_PAGE,
+          },
+          {
+            payload,
+            compatibilityKey: options.compatibilityKey,
+            skipInitialPage: options.skipInitialPage !== false,
+            onRestored: (seed, prepareMs, hydrateMs) => {
+              restored = { seed, prepareMs, hydrateMs };
+            },
+            onFailed: fail,
+          },
+        );
+      } catch (error) {
+        fail(error as Error);
+      }
+    });
+  }
+
+  /** Supersede an editing update without waiting for background pagination. */
+  cancelPreviewUpdate(): void {
+    if (this.cancelPortableImport) {
+      this.cancelPortableImport(
+        new DOMException("Portable import canceled", "AbortError"),
+      );
+      return;
+    }
+    this.adaptViewer_.supersedePreviewUpdate();
+  }
+
+  /** Reload the current source, retaining the viewer and prioritizing its location.
+   * reusePages is only valid for manuscript-only updates with unchanged resources.
+   */
+  refreshDocument(
+    options: {
+      reusePages?: boolean;
+      changedUrls?: string[];
+      clientRevision?: number;
+      fragment?: string | null;
+    } = {},
+  ): void {
+    this.assertMutablePortableViewer();
+    if (!this.lastLoadCommand) return;
+    const revision = this.adaptViewer_.supersedePreviewUpdate();
+    this.adaptViewer_.sendCommand({
+      ...this.lastLoadCommand,
+      ...convertViewerOptions(this.options),
+      fragment: options.fragment ?? null,
+      previewRevision: revision,
+      previewClientRevision: options.clientRevision,
+      reusePages: !!options.reusePages,
+      previewChangedUrls: options.changedUrls || [],
+    });
+  }
   private initialized: boolean = false;
   private adaptViewer_: AdaptiveViewer.AdaptiveViewer;
   private options: CoreViewerOptions;
@@ -203,6 +496,7 @@ export class CoreViewer {
    * Set ViewerOptions to the viewer.
    */
   setOptions(options: CoreViewerOptions) {
+    this.assertMutablePortableViewer();
     const command = Object.assign(
       { a: "configure" },
       convertViewerOptions(options),
@@ -290,6 +584,77 @@ export class CoreViewer {
     );
   }
 
+  /** Load HTML and its declared resources without fetching the HTML itself. */
+  loadMemoryDocument(
+    source: MemoryDocumentSource,
+    opt_documentOptions?: Omit<DocumentOptions, "documentObject">,
+    opt_viewerOptions?: CoreViewerOptions,
+  ): void {
+    this.assertMutablePortableViewer();
+    const prepared = prepareMemoryDocument(
+      source,
+      this.settings.window || window,
+    );
+    this.memoryObjectURLs.push(...prepared.objectURLs);
+    this.loadDocument(
+      source.url,
+      {
+        ...opt_documentOptions,
+        documentObject: prepared.document,
+        clientRevision: source.revision,
+      },
+      opt_viewerOptions,
+    );
+  }
+
+  /** Replace the current in-memory HTML and run the normal preview refresh. */
+  refreshMemoryDocument(
+    source: MemoryDocumentSource,
+    options: {
+      reusePages?: boolean;
+      changedUrls?: string[];
+      fragment?: string | null;
+    } = {},
+  ): void {
+    this.assertMutablePortableViewer();
+    if (!this.lastLoadCommand) {
+      this.loadMemoryDocument(source);
+      return;
+    }
+    const prepared = prepareMemoryDocument(
+      source,
+      this.settings.window || window,
+    );
+    this.memoryObjectURLs.push(...prepared.objectURLs);
+    this.lastLoadCommand = {
+      ...this.lastLoadCommand,
+      url: convertSingleDocumentOptions(source.url),
+      document: prepared.document,
+      previewClientRevision: source.revision,
+      // A fork seed is consumed only by the first isolated load. Subsequent
+      // refreshes must reuse this viewer's own last successfully terminated
+      // focused result rather than repeatedly going back to the old commit.
+      previewSnapshotSeed: undefined,
+    };
+    this.refreshDocument({ ...options, clientRevision: source.revision });
+  }
+
+  /** Revoke blob URLs retained by in-memory resources when the viewer is done. */
+  disposeMemoryResources(): void {
+    this.adaptViewer_.disposeRepeatingElementIndexes();
+    this.previewResourceEpoch++;
+    this.cancelPortableImport?.(
+      new DOMException("Portable import disposed", "AbortError"),
+    );
+    const resourceURL = (
+      (this.settings.window || window) as unknown as { URL: typeof URL }
+    ).URL;
+    for (const url of this.memoryObjectURLs.splice(0))
+      if (this.memoryResourceLeases.has(url))
+        this.deferredResourceReleases.add(url);
+      else resourceURL.revokeObjectURL(url);
+  }
+
   /**
    * Load an EPUB/WebPub publication.
    */
@@ -322,7 +687,9 @@ export class CoreViewer {
     pubUrl: string | null,
     opt_documentOptions?: DocumentOptions,
     opt_viewerOptions?: CoreViewerOptions,
+    portableSeedImport?: PortableSeedImportRequest,
   ) {
+    if (!portableSeedImport) this.assertMutablePortableViewer();
     const documentOptions = opt_documentOptions || {};
 
     function convertStyleSheetArray(
@@ -362,9 +729,18 @@ export class CoreViewer {
         authorStyleSheet: authorStyleSheet,
         userStyleSheet: userStyleSheet,
         cmykReserveMapUrl: documentOptions["cmykReserveMapUrl"],
+        previewSnapshotSeed: documentOptions["previewSnapshotSeed"],
+        reusePages: !!documentOptions["reusePages"],
+        focusedDisplayMode: documentOptions["focusedDisplayMode"],
+        portableSeedImport,
       },
       convertViewerOptions(this.options),
     );
+    if (typeof documentOptions.clientRevision === "number") {
+      command["previewRevision"] = this.adaptViewer_.supersedePreviewUpdate();
+      command["previewClientRevision"] = documentOptions.clientRevision;
+    }
+    this.lastLoadCommand = command;
     if (this.initialized) {
       this.adaptViewer_.sendCommand(command);
     } else {
@@ -513,6 +889,213 @@ export class CoreViewer {
       return {};
     }
     return opfView.cmykStore.toJSON();
+  }
+
+  /**
+   * Returns the DOM container element for the page at the given epage
+   * (0-indexed). Searches currently laid-out pages first, then suffix
+   * convergence candidates, then the snapshot of the previous revision.
+   * Returns null when no container is available (e.g. before the first render).
+   *
+   * Intended for preview clients that need to display a live or historical
+   * page container while a re-render is in progress.
+   */
+  getPageContainerForEpage(epage: number): HTMLElement | null {
+    return this.adaptViewer_.getPageContainerForEpage(epage);
+  }
+
+  /** Return a page from the last fully committed client revision. */
+  getLatestCommittedPageContainerForEpage(epage: number): HTMLElement | null {
+    return this.adaptViewer_.getLatestCommittedPageContainerForEpage(epage);
+  }
+
+  /** Return a cache seed that another isolated preview viewer can safely fork. */
+  getCommittedPreviewSnapshotSeed(): AdaptiveViewer.PreviewSnapshotSeed | null {
+    return this.adaptViewer_.getCommittedPreviewSnapshotSeed();
+  }
+
+  /** Export completed paper even when restart-seed features are unsupported.
+   * The receiver supplies the immutable stylesheet/resource environment.
+   */
+  exportCompletedPaper(compatibilityKey: string): CompletedPaperPacket {
+    const seed = this.getCommittedPreviewSnapshotSeed();
+    this.assertSnapshotResourcesReady(seed);
+    return serializeCompletedPaper(seed, compatibilityKey);
+  }
+
+  /** Snapshot memory assets while leasing their donor URLs. External network
+   * assets must already be supplied as MemoryDocument resources by the caller.
+   */
+  async exportCompletedPaperWithResources(compatibilityKey: string): Promise<CompletedPaperPacket> {
+    const epoch = this.previewResourceEpoch;
+    const seed = this.getCommittedPreviewSnapshotSeed();
+    await this.waitForPreviewResources({ complete: true });
+    if (this.previewResourceEpoch !== epoch || this.getCommittedPreviewSnapshotSeed()?.snapshots !== seed?.snapshots)
+      throw new DOMException("Completed paper changed", "AbortError");
+    const paper = this.exportCompletedPaper(compatibilityKey);
+    const lease = this.retainPreviewDisplayUnit();
+    if (!lease) throw new Error("No completed display unit to lease");
+    const urls = [...this.memoryObjectURLs];
+    const targetWindow = this.settings.window || window;
+    try {
+      const resources = await Promise.all(urls.map(async url => {
+        const response = await targetWindow.fetch(url);
+        if (!response.ok) throw new Error("Completed paper resource is unavailable");
+        const blob = await response.blob();
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+        for (let start=0; start<bytes.length; start+=16384)
+          binary += String.fromCharCode(...bytes.subarray(start,start+16384));
+        return {url, mediaType:blob.type, base64:targetWindow.btoa(binary)};
+      }));
+      return {...paper,resources};
+    } finally { lease.release(); }
+  }
+
+  /** Clone a complete committed cache into this viewer's document. */
+  preparePreviewSnapshotSeed(
+    seed: AdaptiveViewer.PreviewSnapshotSeed,
+  ): AdaptiveViewer.PreviewSnapshotSeed {
+    this.assertSnapshotResourcesReady(seed);
+    return this.adaptViewer_.preparePreviewSnapshotSeed(seed);
+  }
+
+  private assertSnapshotResourcesReady(seed: AdaptiveViewer.PreviewSnapshotSeed | null): void {
+    if (seed && [...seed.snapshots.values()].some((snapshot) => snapshot.pages.some((page) =>
+        page.fetchers.some((fetcher) => !fetcher.hasArrived()))))
+      throw new Error("Preview resources are pending; call waitForPreviewResources({ complete: true }) before copying paper");
+  }
+
+  /** Display a working or committed page/spread while preview layout runs. */
+  showPreviewPageForEpage(
+    epage: number,
+    options: { zoom?: number; pageViewMode?: AdaptiveViewer.PageViewMode } = {},
+  ) {
+    return this.adaptViewer_.showPreviewPageForEpage(epage, options);
+  }
+
+  /** Return the page/spread selected by a completed focused layout. */
+  getCurrentPreviewDisplayUnit() {
+    return this.adaptViewer_.getCurrentPreviewDisplayUnit();
+  }
+
+  /** Retain the completed current unit and its matching source correspondence.
+   * CSS isolation in the destination document is the caller's responsibility.
+   */
+  retainPreviewDisplayUnit(
+    document = (this.settings.window || window).document,
+  ): SourceMappedPresentation | null {
+    const unit = this.getCurrentPreviewDisplayUnit();
+    if (!unit) return null;
+    if (!unit.resourcesReady)
+      throw new Error("Preview resources are pending; use retainPreviewDisplayUnitAsync");
+    const urls = [...this.memoryObjectURLs];
+    const resourceURL = (
+      (this.settings.window || window) as unknown as { URL: typeof URL }
+    ).URL;
+    const acquire = () => {
+      urls.forEach((url) =>
+        this.memoryResourceLeases.set(
+          url,
+          (this.memoryResourceLeases.get(url) ?? 0) + 1,
+        ),
+      );
+      return () =>
+        urls.forEach((url) => {
+          const remaining = (this.memoryResourceLeases.get(url) ?? 1) - 1;
+          if (remaining) this.memoryResourceLeases.set(url, remaining);
+          else {
+            this.memoryResourceLeases.delete(url);
+            if (this.deferredResourceReleases.delete(url))
+              resourceURL.revokeObjectURL(url);
+          }
+        });
+    };
+    return new SourceMappedPresentation(
+      unit.revision,
+      unit.epage,
+      unit.containers,
+      document,
+      acquire,
+    );
+  }
+
+  /** Wait without freezing an image before Core assigns its source URL.
+   * Cancellation, supersession and a bounded timeout release the wait. Resource
+   * load failures settle normally, preserving the browser's failed-image state.
+   */
+  async waitForPreviewResources(options: PreviewResourceOptions = {}): Promise<void> {
+    const resourceEpoch = this.previewResourceEpoch;
+    const timeoutMs = options.timeoutMs ?? 30000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("Invalid preview resource timeout");
+    const initial = this.getCurrentPreviewDisplayUnit();
+    if (!initial) throw new Error("No current preview display unit");
+    const seed = options.complete ? this.getCommittedPreviewSnapshotSeed() : null;
+    if (options.complete && !seed) throw new Error("No completed paper");
+    const deadline = performance.now() + timeoutMs;
+    while (true) {
+      if (options.signal?.aborted) throw new DOMException("Preview resource wait aborted", "AbortError");
+      const current = this.getCurrentPreviewDisplayUnit();
+      if (this.previewResourceEpoch !== resourceEpoch || !current || current.generation !== initial.generation ||
+          (options.complete && this.getCommittedPreviewSnapshotSeed()?.snapshots !== seed.snapshots) ||
+          (!options.complete && (current.containers.length !== initial.containers.length ||
+            current.containers.some((container, i) => container !== initial.containers[i]))))
+        throw new DOMException("Preview display unit changed", "AbortError");
+      const ready = options.complete
+        ? [...seed.snapshots.values()].every((snapshot) => snapshot.pages.every((page) =>
+            page.fetchers.every((fetcher) => fetcher.hasArrived())))
+        : current.resourcesReady;
+      if (ready) return;
+      if (performance.now() >= deadline) throw new Error("Preview resource wait timed out");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  /** Safe asynchronous alternative to the synchronous ready-only clone API. */
+  async retainPreviewDisplayUnitAsync(
+    document = (this.settings.window || window).document,
+    options: Omit<PreviewResourceOptions, "complete"> = {},
+  ): Promise<SourceMappedPresentation | null> {
+    const resourceEpoch = this.previewResourceEpoch;
+    const initial = this.getCurrentPreviewDisplayUnit();
+    if (!initial) return null;
+    await this.waitForPreviewResources(options);
+    const current = this.getCurrentPreviewDisplayUnit();
+    if (this.previewResourceEpoch !== resourceEpoch || !current || current.generation !== initial.generation ||
+        current.containers.length !== initial.containers.length ||
+        current.containers.some((container, i) => container !== initial.containers[i]))
+      throw new DOMException("Preview display unit changed", "AbortError");
+    return this.retainPreviewDisplayUnit(document);
+  }
+
+  /** Return a page only when the caller's committed revision still matches. */
+  getCommittedPageContainerForEpage(
+    epage: number,
+    clientRevision: number,
+  ): HTMLElement | null {
+    return this.adaptViewer_.getCommittedPageContainerForEpage(
+      epage,
+      clientRevision,
+    );
+  }
+
+  /**
+   * Returns the 0-indexed epage of the page that contains the given source
+   * offset within the spine item identified by url. The offset is the
+   * character position within the spine item's source document (as set on
+   * Vtree.Page.offset during layout).
+   *
+   * The search is performed over currently laid-out pages in spineItems. If
+   * the target offset has not yet been laid out (e.g. during an incremental
+   * update that has not reached the target page), returns null.
+   *
+   * Intended for preview clients that need to navigate to the page containing
+   * a specific source location (e.g. the editor cursor position) without
+   * inserting anchor elements into the HTML.
+   */
+  getEpageForSourceOffset(url: string, offset: number): number | null {
+    return this.adaptViewer_.getEpageForSourceOffset(url, offset);
   }
 }
 

@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2021 Vivliostyle Foundation
  *
@@ -24,6 +26,7 @@ import * as Plugin from "./plugin";
 import * as PseudoElement from "./pseudo-element";
 import * as RangeClientRects from "./range-client-rects";
 import * as Vtree from "./vtree";
+import { inheritSplitText } from "./source-map";
 
 type PropertyValue = string | number | Css.Val | undefined;
 
@@ -403,9 +406,16 @@ class TextSpacingPolyfill {
 
       if (textArr.length > 1) {
         const lastIndex = textArr.length - 1;
+        let sourceOffset = 0;
         for (let i = 0; i < lastIndex; i++) {
-          node.before(document.createTextNode(textArr[i]));
+          // Memory manuscripts and isolated lanes own different Documents.
+          // Avoid adopting each split node from the live viewer document.
+          const part = element.ownerDocument.createTextNode(textArr[i]);
+          inheritSplitText(node, part, sourceOffset, textArr[i].length);
+          node.before(part);
+          sourceOffset += textArr[i].length;
         }
+        inheritSplitText(node, node, sourceOffset, textArr[lastIndex].length);
         node.textContent = textArr[lastIndex];
       }
     }
@@ -853,7 +863,6 @@ class TextSpacingPolyfill {
     vertical: boolean,
   ): number {
     const text = textNode.textContent;
-    const document = textNode.ownerDocument;
     let columnOver = 0;
 
     function isAtStartOfLine(): boolean {
@@ -1221,15 +1230,15 @@ class TextSpacingPolyfill {
   }
 
   registerHooks() {
-    Plugin.registerHook(
+    Plugin.registerInternalHook(
       Plugin.HOOKS.POLYFILLED_INHERITED_PROPS,
       this.getPolyfilledInheritedProps.bind(this),
     );
-    Plugin.registerHook(
+    Plugin.registerInternalHook(
       Plugin.HOOKS.PREPROCESS_SINGLE_DOCUMENT,
       this.preprocessSingleDocument.bind(this),
     );
-    Plugin.registerHook(
+    Plugin.registerInternalHook(
       Plugin.HOOKS.POST_LAYOUT_BLOCK,
       this.postLayoutBlock.bind(this),
       true, // text-spacing must be processed before others (Issue #1105)

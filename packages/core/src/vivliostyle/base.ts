@@ -779,8 +779,10 @@ export class SimpleEventTarget {
     if (list) {
       evt.target = this;
       evt.currentTarget = this;
-      for (let i = 0; i < list.length; i++) {
-        list[i](evt);
+      // A listener may remove itself while dispatching. Iterating the live
+      // array would skip the next listener, including a pending API promise.
+      for (const listener of list.slice()) {
+        if (list.includes(listener)) listener(evt);
       }
     }
   }

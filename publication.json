@@ -1,0 +1,14 @@
+{
+  "upstreamBase": "a90d13def0817ef4c67a6780cdbad80e460068db",
+  "benchmarkFiles": [
+    "README.md",
+    "check-page-search.mjs",
+    "check-portable-seed.mjs",
+    "check-preview-diff.mjs",
+    "check-render-cancellation.mjs",
+    "check-source-map.mjs",
+    "check-viewport-resize.mjs",
+    "core-fixture.mjs",
+    "harness/index.html"
+  ]
+}

@@ -260,4 +260,4 @@ export function breakValueToStartBreakType(breakValue: string | null): string {
     : "auto";
 }
 
-Plugin.registerHook("SIMPLE_PROPERTY", convertPageBreakAliases);
+Plugin.registerInternalHook("SIMPLE_PROPERTY", convertPageBreakAliases);

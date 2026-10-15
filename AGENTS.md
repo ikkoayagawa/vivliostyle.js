@@ -109,12 +109,15 @@ Use the VS Code integrated browser for routine rendering checks and bug reproduc
 - **Layout**: `layout.ts`, `layout-processor.ts`, `adaptive-viewer.ts`
 - **Build**: `lerna.json`, `gulpfile.js`, `rollup.config.js`
 
-## Release Process
+## Publication Process
 
-1. `yarn lint && yarn test && yarn build`
-2. Version: `yarn version:prerelease` / `yarn version:graduate` / `yarn version:bump` (creates local commit + tag, does NOT push)
-3. Optionally edit `CHANGELOG.md`
-4. `yarn version:push` (amends commit, retags, pushes — CI then publishes to npm and creates GitHub Release)
+1. Make shared changes in the development repository and verify the affected build and checks.
+2. Commit the development changes, retaining local research and its history.
+3. Preview `node scripts/export-publication.mjs --target=../vivliostyle_publish`.
+4. Apply with `--write` to a clean publication repository; review and commit its diff.
+5. Update the parent application’s Core submodule to the public commit.
+
+`publication.json` defines the upstream base and the checks included in the publication snapshot. The exporter reads a committed revision, preserves upstream history when creating a repository, and leaves publication commits and pushes to the maintainer. Core development watches ESM, CommonJS, IIFE and type declarations together.
 
 ## Commit Message Guidelines
 

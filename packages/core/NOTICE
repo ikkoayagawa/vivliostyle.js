@@ -1,0 +1,46 @@
+Vivliostyle Core fork
+
+Package: @vivliostyle/core
+Version: 2.45.2-ogenkou.1
+Based on Vivliostyle Core 2.45.2, upstream commit a90d13def0817ef4c67a6780cdbad80e460068db.
+
+Copyright and license notices in the original source files remain applicable.
+The fork adds in-memory document input, page reuse, focused pagination,
+portable layout seeds, completed-paper transport, source position mapping,
+page-content layout controls and layout-search optimizations.
+
+Core implementation files added or modified relative to that upstream commit:
+vivliostyle.ts
+vivliostyle/adaptive-viewer.ts
+vivliostyle/base.ts
+vivliostyle/break.ts
+vivliostyle/completed-paper-host.ts
+vivliostyle/completed-paper.ts
+vivliostyle/core-viewer.ts
+vivliostyle/counters.ts
+vivliostyle/css-cascade.ts
+vivliostyle/css-page.ts
+vivliostyle/css-styler.ts
+vivliostyle/css-walk-profile.ts
+vivliostyle/epub.ts
+vivliostyle/layout-helper.ts
+vivliostyle/layout-processor.ts
+vivliostyle/layout.ts
+vivliostyle/memory-document.ts
+vivliostyle/ops.ts
+vivliostyle/page-start-index.ts
+vivliostyle/plugin.ts
+vivliostyle/portable-seed.ts
+vivliostyle/preview-boundary-index.ts
+vivliostyle/preview-cache.ts
+vivliostyle/preview-diff.ts
+vivliostyle/preview-presentation.ts
+vivliostyle/pseudo-element.ts
+vivliostyle/repeat-index.ts
+vivliostyle/repetitive-element.ts
+vivliostyle/semantic-footnote.ts
+vivliostyle/source-map.ts
+vivliostyle/source-presentation.ts
+vivliostyle/table.ts
+vivliostyle/text-polyfill.ts
+vivliostyle/vgen.ts

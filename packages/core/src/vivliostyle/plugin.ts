@@ -198,6 +198,25 @@ export type PaginationProgressHook = (p1: {
 }) => void;
 
 const hooks = {};
+const internalHooks: { [name: string]: ((...args: any[]) => any)[] } = {};
+let untrustedOwnership = false;
+
+/** Core registration, kept separate from third-party hook ownership. */
+export function registerInternalHook(name: string, fn: (...args: any[]) => any, atFirst?: boolean): void {
+  registerHookImpl(name, fn, atFirst);
+  const registered = internalHooks[name] ||= [];
+  if (atFirst) registered.unshift(fn); else registered.push(fn);
+}
+
+/** Progress notifications expose no styles and are supported by the index. */
+export function hasUnsafeRepeatingElementHooks(): boolean {
+  if (untrustedOwnership) return true;
+  return Object.values(HOOKS).some(name => {
+    if (name === HOOKS.PAGINATION_PROGRESS) return false;
+    const current = getInternalHooksForName(name), original = internalHooks[name] || [];
+    return current.length !== original.length || current.some((fn, index) => fn !== original[index]);
+  });
+}
 
 /**
  * Register a function to a hook with the specified name.
@@ -214,6 +233,11 @@ export function registerHook(
   fn: (...p1) => any,
   atFirst?: boolean,
 ): void {
+  if (HOOKS[name] && name !== HOOKS.PAGINATION_PROGRESS) untrustedOwnership = true;
+  registerHookImpl(name, fn, atFirst);
+}
+
+function registerHookImpl(name: string, fn: (...p1) => any, atFirst?: boolean): void {
   if (!HOOKS[name]) {
     Logging.logger.warn(new Error(`Skipping unknown plugin hook '${name}'.`));
   } else {
@@ -255,6 +279,12 @@ export function removeHook(name: string, fn: (...p1) => any): void {
  * This method is for internal use (from the core code).
  */
 export function getHooksForName(name: string): ((...p1) => any)[] {
+  if (HOOKS[name] && name !== HOOKS.PAGINATION_PROGRESS) untrustedOwnership = true;
+  return getInternalHooksForName(name);
+}
+
+/** Core access keeps the mutable registry inside the ownership boundary. */
+export function getInternalHooksForName(name: string): ((...p1) => any)[] {
   const hooksForName = hooks[name];
   return hooksForName || [];
 }

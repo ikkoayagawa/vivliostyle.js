@@ -88,7 +88,7 @@ export class LayoutProcessorResolver {
    * Find LayoutProcessor corresponding to given formatting context.
    */
   find(formattingContext: Vtree.FormattingContext): LayoutProcessor {
-    const hooks: Plugin.ResolveLayoutProcessorHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.ResolveLayoutProcessorHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.RESOLVE_LAYOUT_PROCESSOR,
     );
     for (let i = 0; i < hooks.length; i++) {
@@ -235,7 +235,7 @@ export const blockLayoutProcessor = new BlockLayoutProcessor();
 export const isInstanceOfBlockFormattingContext =
   LayoutProcessor.isInstanceOfBlockFormattingContext;
 
-Plugin.registerHook(Plugin.HOOKS.RESOLVE_FORMATTING_CONTEXT, (nodeContext) => {
+Plugin.registerInternalHook(Plugin.HOOKS.RESOLVE_FORMATTING_CONTEXT, (nodeContext) => {
   const parent = nodeContext.parent;
   if (!parent || nodeContext.formattingContext !== parent.formattingContext) {
     return null;
@@ -245,7 +245,7 @@ Plugin.registerHook(Plugin.HOOKS.RESOLVE_FORMATTING_CONTEXT, (nodeContext) => {
     : null;
 });
 
-Plugin.registerHook(
+Plugin.registerInternalHook(
   Plugin.HOOKS.RESOLVE_LAYOUT_PROCESSOR,
   (formattingContext) => {
     if (formattingContext instanceof BlockFormattingContext) {

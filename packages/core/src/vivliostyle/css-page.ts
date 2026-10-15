@@ -952,6 +952,8 @@ export class PageRuleMaster extends PageMaster.PageMaster<PageRuleMasterInstance
  * @param style Cascaded style for `@page` rules
  */
 export class PageRulePartition extends PageMaster.Partition<PageRulePartitionInstance> {
+  readonly contentWritingMode?: CssCascade.CascadeValue;
+  readonly contentColumnCount?: CssCascade.CascadeValue;
   readonly pageAreaPartition: PageAreaPartition;
 
   constructor(
@@ -961,6 +963,20 @@ export class PageRulePartition extends PageMaster.Partition<PageRulePartitionIns
     public readonly pageSize: PageSize,
   ) {
     super(scope, null, null, [], parent);
+    // Opt-in page content axes. Standard @page writing-mode still controls
+    // the page context only; the default continues to follow the document root.
+    const mode = (
+      style["--vivliostyle-page-content-writing-mode"] as CssCascade.CascadeValue
+    )?.value?.toString().trim();
+    if (mode === "horizontal-tb" || mode === "vertical-rl" || mode === "vertical-lr") {
+      this.contentWritingMode = new CssCascade.CascadeValue(Css.getName(mode), 0);
+    }
+    const columns = (
+      style["--vivliostyle-page-content-column-count"] as CssCascade.CascadeValue
+    )?.value?.toString().trim();
+    if (columns && /^[1-9]\d*$/.test(columns) && Number(columns) <= 100) {
+      this.contentColumnCount = new CssCascade.CascadeValue(new Css.Int(Number(columns)), 0);
+    }
     this.pageAreaPartition = new PageAreaPartition(this.scope, this);
     this.applySpecified(style);
   }
@@ -2036,8 +2052,15 @@ export class PageAreaPartitionInstance
     }
     // The page area content follows the root element's writing mode and
     // direction, not those of the `@page` context. (Issue #2001)
+    // Explicit content-axis overrides below are opt-in and separate from @page.
     // The root element defaults to horizontal-tb / ltr when not specified.
+    const pagePartition = this.pageRulePartitionInstance.pageBox;
+    if (pagePartition.contentColumnCount) {
+      this.cascaded["column-count"] = pagePartition.contentColumnCount;
+      this.cascaded["column-width"] = new CssCascade.CascadeValue(Css.ident.auto, 0);
+    }
     this.cascaded["writing-mode"] =
+      pagePartition.contentWritingMode ??
       docElementStyle["writing-mode"] ??
       new CssCascade.CascadeValue(Css.ident.horizontal_tb, 0);
     this.cascaded["direction"] =

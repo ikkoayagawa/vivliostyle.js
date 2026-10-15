@@ -46,6 +46,7 @@ import * as LayoutProcessor from "./layout-processor";
 import * as Logging from "./logging";
 import * as Net from "./net";
 import * as PageFloats from "./page-floats";
+import { PageStartIndex } from "./page-start-index";
 import * as CssPage from "./css-page";
 import * as Plugin from "./plugin";
 import * as PageMaster from "./page-master";
@@ -991,7 +992,7 @@ export class StyleInstance
     if (this.isInlineLevelElement(element)) {
       return null;
     }
-    const style = this.styler.getStyle(element, false);
+    const style = CssStyler.readStyle(this.styler,element, false);
     if (!style) {
       return null;
     }
@@ -1139,7 +1140,7 @@ export class StyleInstance
     pageType: string,
     pageStartOffset: number,
   ): boolean {
-    const style = this.styler.getStyle(element, false);
+    const style = CssStyler.readStyle(this.styler,element, false);
     if (!style) {
       return false;
     }
@@ -1178,7 +1179,7 @@ export class StyleInstance
     if (!previousSibling) {
       return false;
     }
-    const previousStyle = this.styler.getStyle(previousSibling, false);
+    const previousStyle = CssStyler.readStyle(this.styler,previousSibling, false);
     if (!previousStyle) {
       return false;
     }
@@ -1276,22 +1277,40 @@ export class StyleInstance
     }
   }
 
+  private pageGroupSearch: {
+    root: Element;
+    offset: number;
+    walker: TreeWalker;
+    candidate: Element | null;
+  } | null = null;
+  private reusePageGroupSearch = false;
+
   preparePageGroupPageIndicesForRerender(
     layoutPositions: Array<Vtree.LayoutPosition | null>,
     pageIndexToRender: number,
+    reuseSearch = false,
   ): void {
     this.pageGroupPageCounts = Object.create(null);
     this.currentPageGroupDocument = null;
 
-    for (
-      let previousPageIndex = 0;
-      previousPageIndex < pageIndexToRender;
-      previousPageIndex++
-    ) {
-      const previousLayoutPosition = layoutPositions[previousPageIndex] || null;
-      this.updatePageGroupPageIndices(previousLayoutPosition);
+    this.reusePageGroupSearch = reuseSearch;
+    this.pageGroupSearch = null;
+    try {
+      for (
+        let previousPageIndex = 0;
+        previousPageIndex < pageIndexToRender;
+        previousPageIndex++
+      ) {
+        const previousLayoutPosition = layoutPositions[previousPageIndex] || null;
+        this.updatePageGroupPageIndices(previousLayoutPosition);
+      }
+    } finally {
+      this.reusePageGroupSearch = false;
+      this.pageGroupSearch = null;
     }
   }
+
+  private readonly pageStartIndices = new WeakMap<Element, PageStartIndex>();
 
   private getFirstInFlowElementAtOrAfter(
     root: Element,
@@ -1303,6 +1322,57 @@ export class StyleInstance
     ) {
       return root;
     }
+    // Prefix restoration already checked all cascaded styles. During that
+    // synchronous operation the document and flow eligibility are stable.
+    // Keep the walker between increasing page offsets instead of rescanning
+    // the entire prefix for every page. A backward lookup starts afresh.
+    if (this.reusePageGroupSearch) {
+      let search = this.pageGroupSearch;
+      if (!search || search.root !== root || offset < search.offset) {
+        const state = { root, offset, walker: null as unknown as TreeWalker, candidate: null as Element | null };
+        state.walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+          acceptNode: (node) => {
+            const element = node as Element;
+            if (!this.isNormalFlowElement(element)) return NodeFilter.FILTER_REJECT;
+            if (this.isInlineLevelElement(element)) return NodeFilter.FILTER_SKIP;
+            return this.xmldoc.getElementOffset(element) < state.offset
+              ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT;
+          },
+        });
+        this.pageGroupSearch = search = state;
+      }
+      search.offset = offset;
+      if (search.candidate && this.xmldoc.getElementOffset(search.candidate) >= offset) {
+        return search.candidate;
+      }
+      search.candidate = search.walker.nextNode() as Element | null;
+      return search.candidate;
+    }
+    let index = this.pageStartIndices.get(root);
+    if (!index) {
+      index = new PageStartIndex(root, this.xmldoc.getElementOffset(root));
+      this.pageStartIndices.set(root, index);
+    }
+    const candidate = index.find(
+      offset,
+      (element, elementOffset) => {
+        // Do not force early cascading or skip evaluation of CSS expressions.
+        if (elementOffset >= this.styler.lastOffset) return undefined;
+        const style = this.styler.styles.styleForLayout(element);
+        if (!style) return undefined;
+        return ["display", "position", "float"].every((property) => {
+          const value = (style[property] as CssCascade.CascadeValue)?.value;
+          return !value || value instanceof Css.Ident;
+        });
+      },
+      (element) => this.isNormalFlowElement(element),
+      (element) => this.isInlineLevelElement(element),
+    );
+    if (candidate !== undefined) return candidate;
+    return this.getFirstInFlowElementAtOrAfterReference(root, offset);
+  }
+
+  private getFirstInFlowElementAtOrAfterReference(root: Element, offset: number): Element | null {
     const walker = root.ownerDocument.createTreeWalker(
       root,
       NodeFilter.SHOW_ELEMENT,
@@ -1371,7 +1441,7 @@ export class StyleInstance
   }
 
   private isNormalFlowElement(element: Element): boolean {
-    const style = this.styler.getStyle(element, false);
+    const style = CssStyler.readStyle(this.styler,element, false);
     const display = this.getDisplayValue(element);
     if (display === Css.ident.none) {
       return false;
@@ -1406,7 +1476,7 @@ export class StyleInstance
   }
 
   private getDisplayValue(element: Element): Css.Ident {
-    const style = this.styler.getStyle(element, false);
+    const style = CssStyler.readStyle(this.styler,element, false);
     const displayVal = (
       style?.["display"] as CssCascade.CascadeValue
     )?.evaluate(this.styler.context, "display");
@@ -3775,7 +3845,7 @@ export class OPSDocStore extends Net.ResourceStore<XmlDoc.XMLDocHolder> {
         }
         if (this.triggerSingleDocumentPreprocessing) {
           const hooks: Plugin.PreProcessSingleDocumentHook[] =
-            Plugin.getHooksForName(Plugin.HOOKS.PREPROCESS_SINGLE_DOCUMENT);
+            Plugin.getInternalHooksForName(Plugin.HOOKS.PREPROCESS_SINGLE_DOCUMENT);
           for (let i = 0; i < hooks.length; i++) {
             try {
               hooks[i](xmldoc.document);

@@ -79,7 +79,7 @@ export class PseudoelementStyler implements PseudoElement.PseudoelementStyler {
   getStyle(element: Element, deep: boolean): CssCascade.ElementStyle {
     const pseudoName = getPseudoName(element);
     if (!this.afterStyleTaken && pseudoName?.endsWith("after")) {
-      this.style = this.styler.getStyle(this.element, true);
+      this.style = CssStyler.readStyle(this.styler,this.element, true);
       this.afterStyleTaken = true;
     }
     const pseudoMap = CssCascade.getStyleMap(this.style, "_pseudos");

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Vivliostyle Core Benchmark Harness</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #fff;
+      }
+      #viewport {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="viewport"></div>
+    <script src="/vivliostyle.iife.js"></script>
+    <script>
+      // Shared Core regression harness: load, refresh and inspect complete paper.
+      (function () {
+        "use strict";
+        window._reuseProfiles = [];
+        window.__ogenkouReuseProfile = function (sample) {
+          window._reuseProfiles.push(sample);
+        };
+
+        const { CoreViewer } = VivliostyleCore;
+        let viewer = null;
+
+        function makeSource(html, css, url) {
+          return {
+            url: url || location.origin + "/document.html",
+            html: html,
+            resources: css
+              ? [
+                  {
+                    url: location.origin + "/style.css",
+                    content: css,
+                    mediaType: "text/css",
+                  },
+                ]
+              : [],
+          };
+        }
+
+        window.benchmarkInit = function (options) {
+          if (viewer) {
+            try {
+              viewer.disposeMemoryResources();
+            } catch (_) {}
+            viewer = null;
+            document.getElementById("viewport").innerHTML = "";
+          }
+            viewer = new CoreViewer({
+              viewportElement: document.getElementById("viewport"),
+            }, { autoResize: options?.autoResize ?? true,
+              pageViewMode: options?.pageViewMode ?? "singlePage" });
+            window._benchmarkPageCount = 0;
+            viewer.addListener("nav", function (event) {
+              if (Number.isInteger(event.epageCount))
+                window._benchmarkPageCount = event.epageCount;
+            });
+          viewer.addListener("error", function (e) {
+            console.error("[CoreViewer error]", JSON.stringify(e));
+          });
+          window._benchmarkReusePages = !!(options && options.reusePages);
+          window._benchmarkMetric = (options && options.metric) || "display";
+          if (
+            window._benchmarkReusePages &&
+            window._benchmarkMetric !== "loaded"
+          ) {
+            // display metric: reusePages only activates when renderAllPages=false.
+            // We measure time-to-edited-page (previewdisplay).
+            viewer.setOptions({ renderAllPages: false });
+          }
+          // loaded metric, baseline (reusePages=false): renderAllPages:true (default) → full pagination → loaded.
+          // loaded metric, reuse=true: initial load uses renderAllPages:true, then switched to false before
+          // each refresh (mirroring Ogenkou's CW cycle where setOptions({renderAllPages:false}) is called
+          // before refreshMemoryDocument once the first "loaded" event has fired).
+          return true;
+        };
+
+        // Initial load: always wait for full pagination (loaded).
+        window.benchmarkLoad = function (html, css, url, timeoutMs) {
+          var to = timeoutMs || 120000;
+          var start = performance.now();
+          window._reuseProfiles = [];
+          return new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () {
+              reject(new Error("load timeout " + to + "ms"));
+            }, to);
+            viewer.addListener("loaded", function onL() {
+              clearTimeout(timer);
+              viewer.removeListener("loaded", onL);
+              resolve({
+                elapsedMs: performance.now() - start,
+                source: "loaded",
+              });
+            });
+            viewer.loadMemoryDocument(makeSource(html, css, url), {
+              reusePages: window._benchmarkReusePages,
+              authorStyleSheet: css ? [{ url: location.origin + "/style.css", text: css }] : [],
+            });
+          });
+        };
+
+        // Refresh measurement:
+        //   reuse=true, waitFor="display" → refreshMemoryDocument → previewdisplay (edited page visible)
+        //   reuse=true, waitFor="loaded"  → refreshMemoryDocument → loaded         (full pagination done)
+        //   reuse=false                   → loadMemoryDocument    → loaded         (full re-pagination)
+        window.benchmarkRefresh = function (
+          html,
+          css,
+          url,
+          timeoutMs,
+          waitFor,
+        ) {
+          var to = timeoutMs || 120000;
+          var start = performance.now();
+          window._reuseProfiles = [];
+
+          if (!window._benchmarkReusePages) {
+            // Baseline: full re-pagination from scratch on every edit.
+            return new Promise(function (resolve, reject) {
+              var timer = setTimeout(function () {
+                reject(new Error("baseline timeout " + to + "ms"));
+              }, to);
+              viewer.addListener("loaded", function onL() {
+                clearTimeout(timer);
+                viewer.removeListener("loaded", onL);
+                resolve({
+                  elapsedMs: performance.now() - start,
+                  reusedPages: 0,
+                  source: "loaded-full",
+                });
+              });
+              viewer.loadMemoryDocument(makeSource(html, css, url), {
+                reusePages: false,
+                authorStyleSheet: css ? [{ url: location.origin + "/style.css", text: css }] : [],
+              });
+            });
+          }
+
+          // Fork: incremental update.
+          // waitFor="display" → resolve on previewdisplay (edited page visible, background pagination continues)
+          // waitFor="loaded"  → resolve on loaded         (full pagination complete, with page reuse)
+          //
+          // For loaded metric: mirror Ogenkou's CW cycle exactly.
+          // Ogenkou calls setOptions({ renderAllPages: false }) BEFORE refreshMemoryDocument so that
+          // the PreviewSession constructor sees renderAllPages=false and enables reusePages.
+          // Without this, reusePages = !!command["reusePages"] && !command["renderAllPages"] evaluates
+          // to false and page reuse never activates.
+          if (window._benchmarkMetric === "loaded") {
+            viewer.setOptions({ renderAllPages: false });
+          }
+
+          var resolveOn = waitFor === "loaded" ? "loaded" : "display";
+
+          return new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () {
+              viewer.removeListener("previewdisplay", onPD);
+              viewer.removeListener("loaded", onL);
+              reject(
+                new Error(
+                  "refresh timeout " + to + "ms (waitFor=" + resolveOn + ")",
+                ),
+              );
+            }, to);
+
+            function onPD(e) {
+              if (resolveOn !== "display") return; // still waiting for loaded
+              clearTimeout(timer);
+              viewer.removeListener("previewdisplay", onPD);
+              viewer.removeListener("loaded", onL);
+              resolve({
+                elapsedMs: e.elapsedMs ?? performance.now() - start,
+                reusedPages: e.reusedPages ?? 0,
+                source: "previewdisplay",
+              });
+            }
+            function onL() {
+              clearTimeout(timer);
+              viewer.removeListener("previewdisplay", onPD);
+              viewer.removeListener("loaded", onL);
+              resolve({
+                elapsedMs: performance.now() - start,
+                reusedPages: window._reuseProfiles.at(-1)?.reusedPages ?? 0,
+                source: "loaded",
+                reuseProfiles: window._reuseProfiles.slice(),
+              });
+            }
+
+            viewer.addListener("previewdisplay", onPD);
+            viewer.addListener("loaded", onL);
+            viewer.refreshMemoryDocument(makeSource(html, css, url), {
+              reusePages: true,
+            });
+          });
+        };
+
+        // Outside the timed section: compare pagination and source metadata
+        // of the committed output against an independent fresh load.
+        window.benchmarkPaper = function () {
+          const pages = [];
+            // The lookup API intentionally falls back to historical pages.
+            // Only the completed revision's reported page count is authoritative.
+            for (let index = 0; index < window._benchmarkPageCount; index++) {
+            const container = viewer.getPageContainerForEpage(index);
+            if (!container) break;
+            pages.push({
+              text: container.textContent,
+              source: Array.from(container.querySelectorAll('[data-source-offset]')).map((node) => [
+                node.getAttribute('data-file-path'), node.getAttribute('data-source-offset'),
+                node.getAttribute('data-source-end-offset'), node.textContent,
+              ]),
+            });
+          }
+          return pages;
+        };
+
+        window.benchmarkDestroy = function () {
+          if (viewer) {
+            try {
+              viewer.disposeMemoryResources();
+            } catch (_) {}
+            viewer = null;
+          }
+          document.getElementById("viewport").innerHTML = "";
+          return true;
+        };
+      })();
+    </script>
+  </body>
+</html>

@@ -11,9 +11,6 @@
     "format": "lerna run format",
     "lint": "lerna run lint",
     "now-build": "VIVLIOSTYLE_VERSION=canary yarn build && ./scripts/create-archive.js vivliostyle-canary vivliostyle-viewer-canary.zip",
-    "ship": "lerna publish from-package",
-    "ship:canary": "lerna publish --canary",
-    "ship:prerelease": "yarn ship --dist-tag next",
     "test": "cross-env NODE_OPTIONS=--disable-warning=DEP0169 yarn workspace @vivliostyle/core test",
     "test:layout-regression": "node scripts/layout-regression.mjs",
     "test:reftest": "node scripts/layout-regression.mjs --mode reftest",
@@ -23,12 +20,7 @@
     "test:layout-regression:triage:check": "node scripts/triage-summary.mjs --triage scripts/layout-regression-triage.yaml",
     "test:layout-regression:triage:save": "cp artifacts/layout-regression/triage.yaml scripts/layout-regression-triage.yaml && echo 'Saved to scripts/layout-regression-triage.yaml — commit the file to persist.'",
     "test:core": "yarn workspace @vivliostyle/core test",
-    "test:core-local": "yarn workspace @vivliostyle/core test-local",
-    "version:amend": "git tag --points-at HEAD | xargs -I{} git tag --delete {} && git reset --hard HEAD^",
-    "version:bump": "yarn test:layout-regression:triage:check && lerna version --conventional-commits --preid pre --no-push",
-    "version:push": "TAGS=$(git tag --points-at HEAD) && git add CHANGELOG.md packages/*/CHANGELOG.md && git commit --amend --no-edit && for t in $TAGS; do git tag -f $t; done && git push && git push --tags",
-    "version:graduate": "yarn test:layout-regression:triage:check && lerna version --conventional-commits --conventional-graduate --no-push",
-    "version:prerelease": "yarn test:layout-regression:triage:check && lerna version --conventional-commits --conventional-prerelease --preid pre --no-push"
+    "test:core-local": "yarn workspace @vivliostyle/core test-local"
   },
   "devDependencies": {
     "archiver": "^7.0.1",

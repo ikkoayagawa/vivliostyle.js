@@ -349,7 +349,7 @@ git commit -m "chore: update layout regression triage"
 
 ### リリースゲート
 
-`yarn version:bump`、`yarn version:graduate`、`yarn version:prerelease` はいずれも実行前に `yarn test:layout-regression:triage:check` を呼び出します。これは `scripts/layout-regression-triage.yaml` を読み込み、`regression` または未決定のエントリが残っていると失敗（exit 2）します。リリース前にすべてのエントリを解決してください。
+公開用の更新前に `yarn test:layout-regression:triage:check` を実行します。これは `scripts/layout-regression-triage.yaml` を読み込み、`regression` または未決定のエントリが残っていると失敗（exit 2）します。確認結果を解決してから公開用へ反映してください。
 
 ## CI 連携
 

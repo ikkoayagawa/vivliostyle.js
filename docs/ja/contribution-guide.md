@@ -70,36 +70,14 @@ vivliostyleのソースコードは、`yarn lint` を実行（[eslint-plugin-pre
 
 ### リリースのフロー
 
-リリース処理の前に、次のコードを実行して、リリースビルドが作成されることを確認します。
+開発用リポジトリで修正・検証し、その内容をコミットします。公開用は、その基準コミットから生成します。
 
 ```shell
-yarn lint
-yarn test
-yarn clean
-yarn build
+node scripts/export-publication.mjs --target=../vivliostyle_publish
+node scripts/export-publication.mjs --target=../vivliostyle_publish --write
 ```
 
-#### 1. プレリリース
-
-`yarn version:prerelease` を実行してプレリリース版を作成します。そして、 `yarn version:bump` でプレリリース番号を上げます。
-
-#### 2. 安定版(Stable)リリース
-
-現在のバージョンがプレリリース（例 v2.0.0-pre.4）なら、次を実行します:
-
-```shell
-yarn version:graduate
-```
-
-安定版から次の安定版（例 v2.0.0 -> v2.0.1）にバージョンアップする場合:
-
-```shell
-yarn version:bump
-```
-
-#### 3. 公開
-
-`yarn version:*` コマンドを実行後、必要であれば `CHANGELOG.md` を編集し、その後 `yarn version:push` を実行します。これによりリリースコミットの修正（amend）とタグの更新、GitHubへのプッシュが行われ、CIがnpmへの公開とGitHub Releaseの作成を行います。
+最初のコマンドで変更予定を確認し、次のコマンドで変更のない公開用リポジトリへ反映します。公開用の差分を確認してコミットし、利用側のsubmodule参照をそのコミットへ更新します。公開対象の検証ファイルは `publication.json` で指定します。
 
 ## 一貫した命名ガイドライン
 

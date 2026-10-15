@@ -14,9 +14,6 @@
   - [Watch](#watch)
   - [Lint & Format](#lint--format)
   - [Release Flow](#release-flow)
-    - [1. Pre-release](#1-pre-release)
-    - [2. Stable release](#2-stable-release)
-    - [3. Publish](#3-publish)
 - [Consistent Naming Guideline](#consistent-naming-guideline)
 - [Commit Message Guideline](#commit-message-guideline)
 
@@ -53,36 +50,14 @@ yarn format
 
 ### Release Flow
 
-Before proceeding with the release process, run the following code to ensure that a production build has been created.
+Use the development repository as the source of changes. Build and verify Core, then commit the development changes. Generate the publication files from that commit:
 
-```
-yarn lint
-yarn test
-yarn clean
-yarn build
+```shell
+node scripts/export-publication.mjs --target=../vivliostyle_publish
+node scripts/export-publication.mjs --target=../vivliostyle_publish --write
 ```
 
-#### 1. Pre-release
-
-Run `yarn version:prerelease` to create pre-release. And run `yarn version:bump` to increment pre-release count.
-
-#### 2. Stable release
-
-If current version is pre-release (e.g. v2.0.0-pre.4), run:
-
-```
-yarn version:graduate
-```
-
-To bump up version from stable version to stable version (e.g. v2.0.0 -> v2.0.1):
-
-```
-yarn version:bump
-```
-
-#### 3. Publish
-
-After running `yarn version:*` command above, you can edit `CHANGELOG.md` if needed, then run `yarn version:push`. This amends the release commit, updates the tag, and pushes to GitHub. CI will then publish to npm and create the GitHub Release.
+The first command previews the file changes. The second updates a clean publication repository. Review and commit the publication diff, then record that public Core commit in the parent application’s submodule. The export rules are in `publication.json`.
 
 ## Consistent Naming Guideline
 

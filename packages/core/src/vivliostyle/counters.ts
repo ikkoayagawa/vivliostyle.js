@@ -483,6 +483,7 @@ class CounterResolver implements CssCascade.CounterResolver {
     name: string,
     format: (p1: number[]) => string,
   ): Exprs.Val {
+    this.counterStore.hasDependentPreviewContent = true;
     const id = this.getFragment(url);
     const transformedId = this.getTransformedId(url);
     return new Exprs.Native(
@@ -582,6 +583,7 @@ class CounterResolver implements CssCascade.CounterResolver {
    * https://drafts.csswg.org/css-gcpm-3/#using-named-strings
    */
   getNamedStringVal(name: string, retrievePosition: string): Exprs.Val {
+    this.counterStore.hasPlainNamedStrings = true;
     const native = new Exprs.Native(
       this.pageScope,
       () =>
@@ -859,6 +861,17 @@ class CounterResolver implements CssCascade.CounterResolver {
     stringValue: string | Css.Val,
     elementOffset: number,
   ): void {
+    this.counterStore.hasPlainNamedStrings = true;
+    if (typeof stringValue === "string") {
+      const assignments =
+        this.counterStore.plainNamedStrings.get(elementOffset) ||
+        new Map<string, string>();
+      assignments.set(name, stringValue);
+      this.counterStore.plainNamedStrings.set(elementOffset, assignments);
+    } else {
+      // Assignment-page counters need additional pagination snapshots.
+      this.counterStore.hasDependentPreviewContent = true;
+    }
     const values =
       this.namedStringValues[name] ||
       (this.namedStringValues[name] = Object.create(null));
@@ -876,6 +889,7 @@ class CounterResolver implements CssCascade.CounterResolver {
    * https://drafts.csswg.org/css-gcpm-3/#running-elements
    */
   setRunningElement(name: string, elementOffset: number): void {
+    this.counterStore.hasNamedPreviewContent = true;
     const values =
       this.runningElements[name] ||
       (this.runningElements[name] = Object.create(null));
@@ -883,7 +897,22 @@ class CounterResolver implements CssCascade.CounterResolver {
   }
 }
 
+/** Data-only, completed reference state. Expression closures are rebuilt by cascade. */
+export type PreviewReferenceState = {
+  targets: { id: string; spineIndex: number; pageIndex: number; counters: CssCascade.CounterValues; docCounters?: CssCascade.CounterValues }[];
+  references: { targetId: string; spineIndex: number; pageIndex: number; pageCounters: CssCascade.CounterValues | null; resolved: boolean }[];
+};
+
 export class CounterStore {
+  // Cascade consumes generated content; keep unsupported dependencies visible.
+  // Plain named strings are rebuilt from source; deferred strings are excluded.
+  hasDependentPreviewContent = false;
+  hasTargetPreviewReferences = false;
+  previewReferencesRequireFullLayout = false;
+  hasNamedPreviewContent = false;
+  /** Rebuilt by the incoming document's CSS cascade, without pagination. */
+  hasPlainNamedStrings = false;
+  plainNamedStrings = new Map<number, Map<string, string>>();
   countersById: { [key: string]: CssCascade.CounterValues } =
     Object.create(null);
   pageCountersById: { [key: string]: CssCascade.CounterValues } =
@@ -976,6 +1005,42 @@ export class CounterStore {
     public readonly documentURLTransformer: Base.DocumentURLTransformer,
   ) {
     this.currentPageCounters["page"] = [0];
+  }
+
+  exportPreviewReferences(): PreviewReferenceState {
+    return structuredClone({
+      targets: Object.entries(this.pageIndicesById).flatMap(([id, position]) => this.pageCountersById[id] ? [{ id, ...position, counters: this.pageCountersById[id], docCounters: this.pageDocCountersById[id] }] : []),
+      references: [...Object.values(this.resolvedReferences), ...Object.values(this.unresolvedReferences)].flat().map(ref => ({ targetId: ref.targetId, spineIndex: ref.spineIndex, pageIndex: ref.pageIndex, pageCounters: ref.pageCounters, resolved: ref.resolved })),
+    });
+  }
+
+  /** Adopt only immutable prefix targets. Suffix targets must resolve again;
+   * old values are never used to claim that new paper is complete. */
+  restorePreviewReferences(state: PreviewReferenceState, prefixCount: number): void {
+    const retained = new Set<string>();
+    for (const target of state.targets) {
+      if (target.spineIndex !== 0 || target.pageIndex >= prefixCount) continue;
+      retained.add(target.id);
+      this.pageIndicesById[target.id] = { spineIndex: 0, pageIndex: target.pageIndex };
+      this.pageCountersById[target.id] = cloneCounterValues(target.counters);
+      if (target.docCounters) this.pageDocCountersById[target.id] = cloneCounterValues(target.docCounters);
+    }
+    for (const saved of state.references) {
+      if (saved.spineIndex !== 0 || saved.pageIndex >= prefixCount) continue;
+      const ref = new TargetCounterReference(saved.targetId, saved.resolved && retained.has(saved.targetId));
+      ref.spineIndex = saved.spineIndex;
+      ref.pageIndex = saved.pageIndex;
+      ref.pageCounters = saved.pageCounters ? cloneCounterValues(saved.pageCounters) : null;
+      const table = ref.resolved ? this.resolvedReferences : this.unresolvedReferences;
+      (table[ref.targetId] ??= []).push(ref);
+      let pages = this.referenceTargetIdsBySourcePage.get(0);
+      if (!pages) this.referenceTargetIdsBySourcePage.set(0, pages = new Map());
+      let ids = pages.get(ref.pageIndex);
+      if (!ids) pages.set(ref.pageIndex, ids = new Set());
+      ids.add(ref.targetId);
+      if (!ref.resolved) this.previewReferencesRequireFullLayout = true;
+    }
+    if (state.references.length) this.hasTargetPreviewReferences = true;
   }
 
   createCounterListener(baseURL: string): CssCascade.CounterListener {
@@ -1842,6 +1907,7 @@ export class CounterStore {
     expr: Exprs.Val,
   ) {
     if (name === "pages") {
+      this.hasDependentPreviewContent = true;
       this.pagesCounterExprs.push({ expr, format });
     } else {
       this.pageCounterExprs.push({ expr, format });
@@ -1902,6 +1968,8 @@ export class CounterStore {
     expr: Exprs.Val,
     transformedId: string,
   ) {
+    if (name === "page") this.hasTargetPreviewReferences = true;
+    else this.hasDependentPreviewContent = true;
     this.targetCounterExprs.push({ name, expr, format, transformedId });
   }
 
@@ -1910,6 +1978,7 @@ export class CounterStore {
     expr: Exprs.Val,
     transformedId: string,
   ) {
+    this.hasDependentPreviewContent = true;
     this.targetTextExprs.push({ pseudoElement, expr, transformedId });
   }
 

@@ -1,3 +1,37 @@
+> このリポジトリは、Vivliostyle Core 2.45.2を基に、ページの再利用と部分組版による編集プレビューを追加したforkです。構成と公開APIは [forkの変更内容](CHANGES.md)、Core単体の検証手順は [検証コードの案内](benchmark/README.md) を参照してください。
+
+## forkの取得とビルド
+
+利用側のプロジェクトでは、このリポジトリをsubmoduleとして登録し、GitのコミットでCoreの版を固定します。登録済みのsubmoduleは、親プロジェクトのルートで初期化します。
+
+```console
+git submodule update --init --recursive
+```
+
+Coreリポジトリのルートで次を実行します。
+
+```console
+npm ci --prefix packages/core --workspaces=false --ignore-scripts
+npm run build --prefix packages/core
+```
+
+ブラウザ用の出力は `packages/core/lib/vivliostyle.iife.js`、ES Modulesは `vivliostyle.mjs`、CommonJSは `vivliostyle.cjs`、型定義は `vivliostyle.d.ts` です。Ogenkouはブラウザ用の出力を使用します。内部のパッケージ名は既存コードとの接続に使う `@vivliostyle/core`、各パッケージには `private: true` を設定しています。
+
+## 公開用Coreの生成
+
+普段の修正は開発用Coreで行います。`npm run dev --prefix packages/core` はES Modules・CommonJS・ブラウザ用IIFE・型定義を監視し、ViewerとOgenkouが使う出力を更新します。
+
+変更を検証して開発用でコミットした後、リポジトリ直下から公開用への反映内容を確認します。
+
+```console
+node scripts/export-publication.mjs --target=../vivliostyle_publish
+node scripts/export-publication.mjs --target=../vivliostyle_publish --write
+```
+
+`publication.json` で公開する検証ファイルを指定します。生成は既定でHEADのファイルを使い、`--ref=COMMIT` で基準点を指定できます。新しい公開用リポジトリには上流の履歴を導入し、その上に独自変更を配置します。更新後の差分を確認して公開用でコミットし、そのコミットを利用側のsubmodule参照へ設定します。
+
+開発用に保管する記録はそのまま保持します。公開用に未コミットの変更がある場合は先に確認・保存します。`--allow-dirty --backup=PATH` を付けると、指定した新しい退避先へ変更前のファイルを保存してから反映できます。
+
 <img src="https://vivliostyle.org/assets/vivliostyle-logo.svg" width="300" alt="Vivliostyle" /><br/>
 
 [![GitHub tag][github-tag]][github-tag-url]

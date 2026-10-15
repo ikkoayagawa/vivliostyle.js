@@ -10,9 +10,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node.js
@@ -23,11 +20,6 @@ jobs:
       - run: yarn install
       - run: yarn build
       - run: yarn lint
-      - run: scripts/ci-after-success-hook.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_KEY_VIVLIOSTYLE_ORG: ${{ secrets.DEPLOY_KEY_VIVLIOSTYLE_ORG }}
-          DEPLOY_KEY_VIVLIOSTYLE_GITHUB_IO: ${{ secrets.DEPLOY_KEY_VIVLIOSTYLE_GITHUB_IO }}
 
   test:
     needs: build

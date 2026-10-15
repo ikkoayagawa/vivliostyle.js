@@ -149,7 +149,7 @@ export const polyfilledInheritedProps = [
 ];
 
 export function getPolyfilledInheritedProps(): string[] {
-  const hooks: Plugin.PolyfilledInheritedPropsHook[] = Plugin.getHooksForName(
+  const hooks: Plugin.PolyfilledInheritedPropsHook[] = Plugin.getInternalHooksForName(
     Plugin.HOOKS.POLYFILLED_INHERITED_PROPS,
   );
   return [...polyfilledInheritedProps, ...hooks.flatMap((f) => f())];
@@ -3973,7 +3973,7 @@ const postLayoutBlockLeader: Plugin.PostLayoutBlockHook = (
   }
 };
 
-Plugin.registerHook(Plugin.HOOKS.POST_LAYOUT_BLOCK, postLayoutBlockLeader);
+Plugin.registerInternalHook(Plugin.HOOKS.POST_LAYOUT_BLOCK, postLayoutBlockLeader);
 
 /**
  * Fitting order and specificity in the same number. Order is recorded in the
@@ -6167,7 +6167,7 @@ export class CascadeParserHandler
       this.simpleProperty("flow-into", value, important);
       value = Css.ident.block;
     }
-    const hooks = Plugin.getHooksForName("SIMPLE_PROPERTY");
+    const hooks = Plugin.getInternalHooksForName("SIMPLE_PROPERTY");
     hooks.forEach((hook) => {
       const original = { name: name, value: value, important: important };
       const converted = hook(original);

@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2013 Google, Inc.
  * Copyright 2015 Daishinsha Inc.
@@ -28,9 +30,11 @@ import * as Sizing from "./sizing";
 import * as Break from "./break";
 import * as Logging from "./logging";
 import * as Diff from "./diff";
+import { invalidateSourceText, markGeneratedTextTail } from "./source-map";
 import * as Base from "./base";
 import * as BreakPosition from "./break-position";
 import * as CssCascade from "./css-cascade";
+import * as CssStyler from "./css-styler";
 import * as Css from "./css";
 import * as GeometryUtil from "./geometry-util";
 import * as LayoutHelper from "./layout-helper";
@@ -702,6 +706,9 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
           if (r2) {
             const firstLetterText = r2[0];
             firstLetterLength = firstLetterText.length;
+            // Combining source nodes across first-letter boundaries is not yet mapped.
+            invalidateSourceText(position.sourceNode);
+            invalidateSourceText(position.sourceNode.nextSibling);
             position.sourceNode.textContent = firstLetterText;
             viewNode.textContent = firstLetterText;
             position.sourceNode.nextSibling.textContent =
@@ -2761,7 +2768,7 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
     checkPoints: Vtree.RenderedNodeContext[],
   ) {
     RubyEmphasis.adjustAnnotationsForNodes(checkPoints, this.clientLayout);
-    const hooks: Plugin.PostLayoutBlockHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.PostLayoutBlockHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.POST_LAYOUT_BLOCK,
     );
     hooks.forEach((hook) => {
@@ -2904,7 +2911,7 @@ export class Column extends VtreeImpl.Container implements Layout.Column {
   }
 
   resolveTextNodeBreaker(nodeContext: Vtree.NodeContext): TextNodeBreaker {
-    const hooks: Plugin.ResolveTextNodeBreakerHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.ResolveTextNodeBreakerHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.RESOLVE_TEXT_NODE_BREAKER,
     );
     return hooks.reduce(
@@ -5408,13 +5415,9 @@ export class TextNodeBreaker implements Layout.TextNodeBreaker {
       // eslint-disable-next-line no-misleading-character-class
       /[\u0620\u0626\u0628\u062A-\u062E\u0633-\u0647\u0649\u064A\u066E\u066F\u0678-\u0687\u069A-\u06BF\u06C1\u06C2\u06CC\u06CE\u06D0\u06D1\u06FA-\u06FC\u06FF\u0712-\u0714\u071A-\u071D\u071F-\u0727\u0729\u072B\u072D\u072E\u074E-\u0758\u075C-\u076A\u076D-\u0770\u0772\u0775-\u0777\u077A-\u077F\u07CA-\u07EA\u07FA\u0841-\u0845\u0848\u084A-\u0853\u0855\u0860\u0862-\u0865\u0868\u0883-\u0886\u0889-\u088D\u08A0-\u08A9\u08AF\u08B0\u08B3-\u08B8\u08BA-\u08C8\u1807\u180A\u1820-\u1878\u1887-\u18A8\u18AA\u200D\uA840-\uA871\u{10AC0}-\u{10AC4}\u{10AD3}-\u{10AD6}\u{10AD8}-\u{10ADC}\u{10ADE}-\u{10AE0}\u{10AEB}-\u{10AEE}\u{10B80}\u{10B82}\u{10B86}-\u{10B88}\u{10B8A}\u{10B8B}\u{10B8D}\u{10B90}\u{10BAD}\u{10BAE}\u{10D01}-\u{10D21}\u{10D23}\u{10EC3}\u{10EC4}\u{10F30}-\u{10F32}\u{10F34}-\u{10F44}\u{10F51}-\u{10F53}\u{10F70}-\u{10F73}\u{10F76}-\u{10F81}\u{10FB0}\u{10FB2}\u{10FB3}\u{10FB8}\u{10FBB}\u{10FBC}\u{10FBE}\u{10FBF}\u{10FC1}\u{10FC4}\u{10FCA}\u{1E900}-\u{1E943}]\p{Mn}*$/u;
     const zwj = checkJoiningType.test(text.slice(0, viewIndex)) ? "\u200D" : "";
-    textNode.replaceData(
-      viewIndex,
-      text.length - viewIndex,
-      !nodeContext.breakWord
-        ? zwj + resolveHyphenateCharacter(nodeContext)
-        : "",
-    );
+    const replacement = !nodeContext.breakWord ? zwj + resolveHyphenateCharacter(nodeContext) : "";
+    markGeneratedTextTail(textNode, viewIndex, replacement.length);
+    textNode.replaceData(viewIndex, text.length - viewIndex, replacement);
     if (zwj) {
       const p = nodeContext.preprocessedTextContent[0][1] as string;
       nodeContext.preprocessedTextContent[0][1] =
@@ -5435,13 +5438,10 @@ export class TextNodeBreaker implements Layout.TextNodeBreaker {
     const ch1 = text.charAt(viewIndex);
 
     // If automatic hyphen was inserted here, add a real hyphen.
-    textNode.replaceData(
-      viewIndex,
-      text.length - viewIndex,
-      !nodeContext.breakWord && Base.isLetter(ch0) && Base.isLetter(ch1)
-        ? resolveHyphenateCharacter(nodeContext)
-        : "",
-    );
+    const replacement = !nodeContext.breakWord && Base.isLetter(ch0) && Base.isLetter(ch1)
+      ? resolveHyphenateCharacter(nodeContext) : "";
+    markGeneratedTextTail(textNode, viewIndex, replacement.length);
+    textNode.replaceData(viewIndex, text.length - viewIndex, replacement);
     return viewIndex;
   }
 
@@ -5822,7 +5822,7 @@ export class PageFloatArea extends Column implements Layout.PageFloatArea {
       if (!sourceNode || sourceNode.nodeType !== Node.ELEMENT_NODE) {
         return false;
       }
-      const style = styler.getStyle(sourceNode as Element, false);
+      const style = CssStyler.readStyle(styler,sourceNode as Element, false);
       const footnoteDisplay = CssCascade.getProp(
         style,
         "footnote-display",

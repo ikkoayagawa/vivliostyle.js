@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2013 Google, Inc.
  * Copyright 2015 Daishinsha Inc.
@@ -29,6 +31,7 @@ import * as CssTokenizer from "./css-tokenizer";
 import * as CssProp from "./css-prop";
 import * as CssStyler from "./css-styler";
 import * as Diff from "./diff";
+import { registerTextFragment } from "./source-map";
 import * as Display from "./display";
 import * as Exprs from "./exprs";
 import * as Font from "./font";
@@ -267,7 +270,7 @@ export class ViewFactory
   }
 
   private isNormalFlowElement(element: Element): boolean {
-    const style = this.styler.getStyle(element, false);
+    const style = CssStyler.readStyle(this.styler,element, false);
     const displayValue = (
       style?.["display"] as CssCascade.CascadeValue
     )?.evaluate(this.styler.context, "display");
@@ -318,7 +321,7 @@ export class ViewFactory
       }
       const element = child as Element;
       if (this.isNormalFlowElement(element)) {
-        const style = this.styler.getStyle(element, false);
+        const style = CssStyler.readStyle(this.styler,element, false);
         const displayValue = (
           style?.["display"] as CssCascade.CascadeValue
         )?.evaluate(this.styler.context, "display");
@@ -348,7 +351,7 @@ export class ViewFactory
         return effectivePageType;
       }
       const childPageType = this.getExplicitPageType(
-        this.styler.getStyle(child, false),
+        CssStyler.readStyle(this.styler,child, false),
       );
       if (childPageType) {
         effectivePageType = childPageType;
@@ -480,7 +483,7 @@ export class ViewFactory
           }
           const child = element.firstElementChild;
           if (child && Vtree.canIgnore(child.previousSibling)) {
-            const childStyle = styler.getStyle(child, false);
+            const childStyle = CssStyler.readStyle(styler,child, false);
             if (childStyle) {
               const childDisplay = CssCascade.getProp(childStyle, "display");
               if (
@@ -994,7 +997,7 @@ export class ViewFactory
         const styler = shadow
           ? (shadow.styler as CssStyler.AbstractStyler)
           : this.styler;
-        const nodeStyle = styler.getStyle(node as Element, false);
+        const nodeStyle = CssStyler.readStyle(styler,node as Element, false);
         styles.push(nodeStyle);
         lang = lang || Base.getLangAttribute(node as Element);
       }
@@ -1222,7 +1225,7 @@ export class ViewFactory
     float: Css.Val | null | undefined,
     isRoot: boolean,
   ) {
-    const hooks: Plugin.ResolveFormattingContextHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.ResolveFormattingContextHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.RESOLVE_FORMATTING_CONTEXT,
     );
     for (let i = 0; i < hooks.length; i++) {
@@ -1256,7 +1259,7 @@ export class ViewFactory
     const styler = nodeContext.shadowContext
       ? nodeContext.shadowContext.styler
       : this.styler;
-    let elementStyle = styler.getStyle(element, false);
+    let elementStyle = CssStyler.readStyle(styler,element, false);
     this.syncSemanticFootnoteCounterToTarget(element);
     if (!nodeContext.shadowContext) {
       const offset = this.xmldoc.getElementOffset(element);
@@ -1270,7 +1273,7 @@ export class ViewFactory
     const cascadedMargins: { [key: string]: CssCascade.CascadeValue } = {};
     const semanticFootnoteStyleAccess: SemanticFootnote.SemanticFootnoteStyleAccess =
       {
-        getStyle: (target) => this.styler.getStyle(target, false),
+        getStyle: (target) => CssStyler.readStyle(this.styler,target, false),
         getProp: (style, propName) =>
           style ? CssCascade.getProp(style, propName) : null,
         getStyleMap: (style, mapName) => CssCascade.getStyleMap(style, mapName),
@@ -1297,10 +1300,10 @@ export class ViewFactory
       elementStyle = inheritedValues.elementStyle;
       nodeContext.lang = inheritedValues.lang;
     }
-    const positionCV: CssCascade.CascadeValue = elementStyle["position"];
-    const floatCV: CssCascade.CascadeValue = elementStyle["float"];
+    const positionCV = CssCascade.getProp(elementStyle, "position");
+    const floatCV = CssCascade.getProp(elementStyle, "float");
     const floatReferenceCV: CssCascade.CascadeValue =
-      elementStyle["float-reference"];
+      CssCascade.getProp(elementStyle, "float-reference");
     const floatReference =
       floatCV &&
       !Css.isDefaultingValue(floatCV.value) &&
@@ -2378,7 +2381,7 @@ export class ViewFactory
           this.viewport.window,
           nodeContext.parent?.sourceNode as Element | null,
           (source) =>
-            CssCascade.getProp(styler.getStyle(source, false), "display")
+            CssCascade.getProp(CssStyler.readStyle(styler,source, false), "display")
               ?.evaluate(this.context, "display")
               .toString(),
           cascadedMargins,
@@ -2776,7 +2779,7 @@ export class ViewFactory
     nodeContext: Vtree.NodeContext,
     computedStyle: { [key: string]: Css.Val },
   ) {
-    const hooks: Plugin.PreProcessElementStyleHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.PreProcessElementStyleHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.PREPROCESS_ELEMENT_STYLE,
     );
     hooks.forEach((hook) => {
@@ -2784,28 +2787,158 @@ export class ViewFactory
     });
   }
 
+  private repeatCandidate(
+    style: CssCascade.ElementStyle,
+    stats?: { reasons: Record<string, number> },
+  ): { value: string | null } | undefined {
+    const reject = (reason: string) => {
+      if (stats) stats.reasons[reason] = (stats.reasons[reason] ?? 0) + 1;
+      return undefined;
+    };
+    // No caches, no expression evaluation and no region/view-condition merge.
+    if (style["_regions"] || (style["_viewConditionalStyles"] as any[])?.length)
+      return reject("conditional-style");
+    const pure = (value: Css.Val): boolean => {
+      if (
+        value.constructor === Css.Ident ||
+        value.constructor === Css.Str ||
+        value.constructor === Css.Num ||
+        value.constructor === Css.Int ||
+        value.constructor === Css.URL
+      )
+        return true;
+      // CalcFilterVisitor leaves these units unchanged. Root/viewport units
+      // and percentages are excluded because evaluating them uses context.
+      if (value.constructor === Css.Numeric)
+        return /^(px|pt|pc|mm|cm|in|q|em|ex|cap|ch|ic|lh)$/.test(
+          (value as Css.Numeric).unit,
+        );
+      if (
+        value.constructor === Css.SpaceList ||
+        value.constructor === Css.CommaList
+      )
+        return (value as Css.SpaceList).values.every(pure);
+      return false;
+    };
+    for (const name in style) {
+      if (!CssCascade.isPropName(name)) continue;
+      const casc = style[name] as CssCascade.CascadeValue;
+      if (
+        !casc ||
+        Object.getPrototypeOf(casc) !== CssCascade.CascadeValue.prototype ||
+        !pure(casc.value)
+      )
+        return reject(
+          "dynamic-or-unknown-value:" +
+            name +
+            ":" +
+            casc?.value?.constructor?.name,
+        );
+    }
+    const read = (name: string) =>
+      (style[name] as CssCascade.CascadeValue)?.value;
+    for (const name of ["repeat-on-break", "display", "position", "float"]) {
+      const value = read(name);
+      if (value && value.constructor !== Css.Ident)
+        return reject("non-ident-dependency");
+    }
+    const values: { [name: string]: Css.Val } = {};
+    const display =
+      (read("display") as Css.Ident) ||
+      (this.sourceNode &&
+      (this.sourceNode as Element).namespaceURI === Base.NS.XHTML
+        ? Css.ident.inline
+        : undefined);
+    const computed = Display.getComputedDisplayValue(
+      display,
+      read("position") as Css.Ident,
+      read("float"),
+      this.sourceNode === this.xmldoc.root,
+    );
+    if (computed.display) values["display"] = computed.display;
+    const repeat = read("repeat-on-break");
+    if (repeat) values["repeat-on-break"] = repeat;
+    return { value: this.processRepeatOnBreak(values) };
+  }
+
+  private *repeatChildren(
+    nodeContext: Vtree.NodeContext,
+    element: Element,
+    styler: CssStyler.AbstractStyler,
+  ) {
+    if (!element.firstElementChild) return;
+    const verify =
+      (globalThis as unknown as { __ogenkouVerifyRepeatIndex?: boolean })
+        .__ogenkouVerifyRepeatIndex === true;
+    const evaluate = (child: Element) => {
+      const elementStyle = CssStyler.readStyle(styler, child, false);
+      const candidate = this.repeatCandidate(elementStyle);
+      if (verify && candidate) {
+        const computed: { [key: string]: Css.Val } = {};
+        this.computeStyle(
+          nodeContext.vertical,
+          nodeContext.direction === "rtl",
+          elementStyle,
+          computed,
+        );
+        if (candidate.value !== this.processRepeatOnBreak(computed))
+          throw new Error(
+            "Repeating-element candidate differs from full style computation",
+          );
+      }
+      // Pseudos are populated on pop, but flattenCascadedStyle does not merge
+      // them into the element's repeating dependencies. Regions/view styles
+      // are excluded by repeatCandidate; unknown metadata remains untrusted.
+      const stable = !Object.keys(elementStyle).some(
+        (name) =>
+          !CssCascade.isPropName(name) &&
+          name !== "_viewConditionalStyles" &&
+          name !== "_pseudos",
+      );
+      return {
+        negative: stable && candidate?.value === null,
+        value: { elementStyle, candidate },
+      };
+    };
+    const owned =
+      Object.getPrototypeOf(styler) === CssStyler.Styler.prototype &&
+      styler.getStyle === CssStyler.Styler.prototype.getStyle
+        ? (styler as CssStyler.Styler)
+        : null;
+    if (owned) {
+      if (Plugin.hasUnsafeRepeatingElementHooks())
+        owned.styles.markMutableAccess();
+      yield* owned.styles.repeatIndex.scan(
+        element,
+        this.sourceNode,
+        () => owned.styles.revision,
+        evaluate,
+        () => owned.styles.canIndexRepeatingElements,
+      );
+    } else {
+      for (
+        let child = element.firstElementChild;
+        child;
+        child = child.nextElementSibling
+      )
+        yield evaluate(child).value;
+    }
+  }
+
   private findAndProcessRepeatingElements(
     nodeContext: Vtree.NodeContext,
     element: Element,
     styler: CssStyler.AbstractStyler,
   ) {
-    for (
-      let child: Node | null = element.firstChild;
-      child;
-      child = child.nextSibling
-    ) {
-      if (child.nodeType !== 1) {
-        continue;
-      }
+    for (const { elementStyle, candidate } of this.repeatChildren(nodeContext, element, styler)) {
       const computedStyle: { [key: string]: Css.Val } = {};
-      const elementStyle = styler.getStyle(child as Element, false);
-      this.computeStyle(
-        nodeContext.vertical,
-        nodeContext.direction === "rtl",
-        elementStyle,
-        computedStyle,
-      );
-      const processRepeatOnBreak = this.processRepeatOnBreak(computedStyle);
+      let processRepeatOnBreak: string | null;
+      if (candidate) {
+        processRepeatOnBreak = candidate.value;
+      } else {
+        this.computeStyle(nodeContext.vertical, nodeContext.direction === "rtl", elementStyle, computedStyle);
+        processRepeatOnBreak = this.processRepeatOnBreak(computedStyle);
+      }
       if (!processRepeatOnBreak) {
         continue;
       }
@@ -2862,6 +2995,7 @@ export class ViewFactory
         offsetInNode,
       );
       this.viewNode = document.createTextNode(textContent);
+      registerTextFragment(this.viewNode, nodeContext.sourceNode, offsetInNode, preprocessedTextContent);
       frame.finish(true);
     });
     return frame.result();
@@ -2878,7 +3012,7 @@ export class ViewFactory
     const frame: Task.Frame<Diff.Change[]> = Task.newFrame(
       "preprocessTextContent",
     );
-    const hooks: Plugin.PreProcessTextContentHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.PreProcessTextContentHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.PREPROCESS_TEXT_CONTENT,
     );
     let index = 0;
@@ -3197,7 +3331,7 @@ export class ViewFactory
     // Use the footnote element's styler to get ::footnote-call styles
     const shadowStyler = new PseudoElement.PseudoelementStyler(
       footnoteNodeContext.sourceNode as Element,
-      this.styler.getStyle(footnoteNodeContext.sourceNode as Element, false),
+      CssStyler.readStyle(this.styler,footnoteNodeContext.sourceNode as Element, false),
       this.styler,
       this.context,
       this.exprContentListener,
@@ -3717,7 +3851,7 @@ export class ViewFactory
     const styler = nodeContext.shadowContext
       ? (nodeContext.shadowContext.styler as CssStyler.AbstractStyler)
       : this.styler;
-    let elementStyle = styler.getStyle(element, false);
+    let elementStyle = CssStyler.readStyle(styler,element, false);
     const pseudoMap = CssCascade.getStyleMap(elementStyle, "_pseudos");
     if (!pseudoMap) {
       return;
@@ -3971,7 +4105,7 @@ export class ViewFactory
     ) {
       const nextElem = nodeContext.sourceNode.nextSibling as Element;
       const display = CssCascade.getProp(
-        this.styler.getStyle(nextElem, false),
+        CssStyler.readStyle(this.styler,nextElem, false),
         "display",
       )?.value.toString();
       isBeforeBlock =
@@ -4317,7 +4451,16 @@ export class DefaultClientLayout implements Vtree.ClientLayout {
     ) {
       // getBoundingClientRect() returns 0,0,0,0 for WBR element (Chrome)
       // (Fix for issue #802)
-      return rect;
+      // Return a mutable value. Layout callers adjust ClientRect edges, while
+      // Chromium's DOMRectReadOnly properties have getter-only accessors.
+      return {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+      } as Vtree.ClientRect;
     }
     const layoutBoxRect = this.layoutBox.getBoundingClientRect();
     return this.subtractOffsets(rect, layoutBoxRect);

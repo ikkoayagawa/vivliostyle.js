@@ -1,3 +1,5 @@
+// Ogenkou fork modification notice (2026-10-05): this file differs from upstream Vivliostyle 2.45.1.
+// See SOURCE_CODE.md in the Ogenkou distribution for the fork scope and corresponding source.
 /**
  * Copyright 2013 Google, Inc.
  * Copyright 2015 Daishinsha Inc.
@@ -34,6 +36,12 @@ import * as Logging from "./logging";
 import * as Net from "./net";
 import * as OPS from "./ops";
 import * as Plugin from "./plugin";
+import {
+  PreviewSnapshot,
+  PreviewSuffix,
+  restorePreviewPrefix,
+  restorePreviewSuffix,
+} from "./preview-cache";
 import * as SemanticFootnote from "./semantic-footnote";
 import * as Task from "./task";
 import * as Toc from "./toc";
@@ -1452,6 +1460,32 @@ export class OPFDoc {
           frame.finish(null);
           return;
         }
+        if (fragstr.startsWith("#") && !fragstr.startsWith("#epubcfi(")) {
+          // A plain HTML id remains a document fragment even when a synthetic
+          // OPF exists (as it does for an in-memory multi-source preview).
+          // Treating it as an EPUB CFI made focused preview silently fall back
+          // to page 1.
+          const item = this.spine[0];
+          let id: string;
+          try {
+            id = decodeURIComponent(fragstr.slice(1));
+          } catch {
+            id = fragstr.slice(1);
+          }
+          this.store.load(item.src).then((xmldoc: XmlDoc.XMLDocHolder) => {
+            const node = xmldoc.document.getElementById(id);
+            if (!node) {
+              frame.finish(null);
+              return;
+            }
+            frame.finish({
+              spineIndex: item.spineIndex,
+              offsetInItem: xmldoc.getNodeOffset(node, 0, false),
+              pageIndex: -1,
+            });
+          });
+          return;
+        }
         let fragment = new CFI.Fragment();
         fragment.fromString(fragstr);
         let item: OPFItem;
@@ -1552,7 +1586,7 @@ export class OPFDoc {
 
   getEPageFromPosition(position: Position): Task.Result<number> {
     const item = this.spine[position.spineIndex];
-    if (this.epageIsRenderedPage) {
+    if (this.epageIsRenderedPage && position.pageIndex >= 0) {
       const epage = item.epage + position.pageIndex;
       return Task.newResult(epage);
     }
@@ -1587,6 +1621,8 @@ export const makePageAndPosition = (
 });
 
 export type OPFViewItem = {
+  previewLayoutKey?: string;
+  previewSuffix?: PreviewSuffix;
   item: OPFItem;
   xmldoc: XmlDoc.XMLDocHolder;
   instance: OPS.StyleInstance;
@@ -1604,6 +1640,30 @@ type DeferredReferencePage = {
 };
 
 export class OPFView implements Vgen.CustomRendererFactory {
+  /** Disconnect source observers even when a committed snapshot retains pages. */
+  disposeRepeatingElementIndexes(): void {
+    for (const item of this.spineItems) {
+      if (!item?.instance) continue;
+      for (const styler of Object.values(item.instance.stylerMap))
+        styler.styles.repeatIndex.dispose();
+    }
+  }
+  /** Actual single-page layout calls; useful to verify zero-page seed import. */
+  typesetPageCount = 0;
+  /** Core-owned, instance-local preparation consumed before the first render. */
+  prepareBeforeFirstPage: (() => Task.Result<boolean>) | null = null;
+  previewSnapshots = new Map<string, PreviewSnapshot>();
+  previewReusedPages = 0;
+  previewReusedPrefixPages = 0;
+  previewReusedSuffixPages = 0;
+  previewCacheMs = 0;
+  previewCacheResults: {
+    url: string;
+    pages: number;
+    reason: string;
+    blockers?: PreviewSnapshot["blockers"];
+    layoutChanges?: string[];
+  }[] = [];
   spineItems: (OPFViewItem | null)[] = [];
   spineItemLoadingContinuations: (Task.Continuation<any>[] | null)[] = [];
   pref: Exprs.Preferences;
@@ -1753,8 +1813,9 @@ export class OPFView implements Vgen.CustomRendererFactory {
       this.opf.epageCountCallback?.(this.opf.epageCount);
     }
 
-    if (oldPage) {
-      viewItem.instance.viewport.contentContainer.replaceChild(
+    const contentContainer = viewItem.instance.viewport.contentContainer;
+    if (oldPage?.container.parentNode === contentContainer) {
+      contentContainer.replaceChild(
         page.container,
         oldPage.container,
       );
@@ -1762,7 +1823,10 @@ export class OPFView implements Vgen.CustomRendererFactory {
       // Find insert position in contentContainer.
       let insertPos: Element | null = null;
       if (pageIndex > 0) {
-        insertPos = viewItem.pages[pageIndex - 1].container.nextElementSibling;
+        const previousContainer = viewItem.pages[pageIndex - 1].container;
+        if (previousContainer.parentNode === contentContainer) {
+          insertPos = previousContainer.nextElementSibling;
+        }
       } else {
         for (
           let i = viewItem.item.spineIndex + 1;
@@ -1770,13 +1834,15 @@ export class OPFView implements Vgen.CustomRendererFactory {
           i++
         ) {
           const item = this.spineItems[i];
-          if (item && item.pages[0]) {
+          if (
+            item?.pages[0]?.container.parentNode === contentContainer
+          ) {
             insertPos = item.pages[0].container;
             break;
           }
         }
       }
-      viewItem.instance.viewport.contentContainer.insertBefore(
+      contentContainer.insertBefore(
         page.container,
         insertPos,
       );
@@ -1914,7 +1980,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
     viewItem: OPFViewItem,
     nextLayoutPosition: Vtree.LayoutPosition | null,
   ) {
-    const hooks: Plugin.PaginationProgressHook[] = Plugin.getHooksForName(
+    const hooks: Plugin.PaginationProgressHook[] = Plugin.getInternalHooksForName(
       Plugin.HOOKS.PAGINATION_PROGRESS,
     );
     if (!hooks.length) {
@@ -2140,6 +2206,30 @@ export class OPFView implements Vgen.CustomRendererFactory {
     renderedPage: Vtree.Page,
   ): Task.Result<any> {
     if (!nextLayoutPosition) {
+      return Task.newResult(true);
+    }
+
+    // Until end-counter snapshots are available for crossing spine
+    // boundaries, only adopt a suffix in the final (normally only) spine.
+    const reusedSuffixPages =
+      viewItem.item.spineIndex === this.opf.spine.length - 1
+        ? restorePreviewSuffix(
+            viewItem,
+            nextLayoutPosition,
+            this.counterStore.currentPageCounters,
+            renderedPage.pageType,
+          )
+        : 0;
+    if (reusedSuffixPages) {
+      this.previewReusedPages += reusedSuffixPages;
+      this.previewReusedSuffixPages += reusedSuffixPages;
+      const result = this.previewCacheResults.find(
+        (entry) => entry.url === viewItem.item.src,
+      );
+      if (result) {
+        result.pages += reusedSuffixPages;
+        result.reason = "suffix-reused";
+      }
       return Task.newResult(true);
     }
 
@@ -2904,6 +2994,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
     viewItem: OPFViewItem,
     pos: Vtree.LayoutPosition | null,
   ): Task.Result<RenderSinglePageResult> {
+    this.typesetPageCount++;
     const frame: Task.Frame<RenderSinglePageResult> =
       Task.newFrame("renderSinglePage");
 
@@ -2984,7 +3075,7 @@ export class OPFView implements Vgen.CustomRendererFactory {
       const pageIndex = pos ? pos.page - 1 : pageIndexToRender;
       this.finishPageContainer(viewItem, page, pageIndex);
       this.counterStore.finishPage(page.spineIndex, pageIndex);
-      const collectResult = Plugin.getHooksForName(
+      const collectResult = Plugin.getInternalHooksForName(
         Plugin.HOOKS.PAGINATION_PROGRESS,
       ).length
         ? this.collectTotalOffsets()
@@ -3193,6 +3284,11 @@ export class OPFView implements Vgen.CustomRendererFactory {
    * Renders a page at the specified position.
    */
   renderPage(position: Position): Task.Result<PageAndPosition | null> {
+    if (this.prepareBeforeFirstPage) {
+      const prepare = this.prepareBeforeFirstPage;
+      this.prepareBeforeFirstPage = null;
+      return prepare().thenAsync(() => this.renderPage(position));
+    }
     const currentTask = Task.currentTask();
     this.beginRenderingPage(currentTask);
     let renderingEnded = false;
@@ -3305,7 +3401,11 @@ export class OPFView implements Vgen.CustomRendererFactory {
                 const offset = viewItem.instance.getPosition(pos);
                 if (offset > seekOffset) {
                   resultPage = page;
-                  pageIndex = viewItem.layoutPositions.length - 2;
+                  // Suffix convergence can append many cached layout
+                  // positions while this one page is being rendered. Keep
+                  // the index returned for the rendered page instead of
+                  // deriving it from the now-expanded positions array.
+                  pageIndex = result.pageAndPosition.position.pageIndex;
                   loopFrame.breakLoop();
                   return;
                 }
@@ -4180,6 +4280,13 @@ export class OPFView implements Vgen.CustomRendererFactory {
           this.opf.pageProgression = instance.pageProgression;
         }
         viewItem = {
+          previewLayoutKey: JSON.stringify([
+            this.pref,
+            viewport.width,
+            viewport.height,
+            viewport.fontSize,
+            viewport.pixelRatio,
+          ]),
           item,
           xmldoc,
           instance,
@@ -4189,6 +4296,29 @@ export class OPFView implements Vgen.CustomRendererFactory {
           pageCounterStarts: [],
         };
         this.spineItems[spineIndex] = viewItem;
+
+        const snapshot = this.previewSnapshots.get(item.src);
+        if (snapshot) {
+          this.previewSnapshots.delete(item.src);
+          const start = this.viewport.window.performance.now();
+          const count = restorePreviewPrefix(snapshot, viewItem);
+          this.previewCacheMs += this.viewport.window.performance.now() - start;
+          this.previewCacheResults.push({
+            url: item.src,
+            pages: count,
+            reason: snapshot.reason,
+            blockers: snapshot.blockers,
+            layoutChanges: snapshot.layoutChanges,
+          });
+          this.previewReusedPages += count;
+          this.previewReusedPrefixPages += count;
+          if (count) {
+            const counters = viewItem.pageCounterStarts[count];
+            if (counters)
+              this.counterStore.currentPageCounters =
+                cloneCounterValues(counters);
+          }
+        }
 
         frame.finish(viewItem);
         loadingContinuations.forEach((c) => {

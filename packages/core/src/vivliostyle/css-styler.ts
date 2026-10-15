@@ -33,6 +33,8 @@ import * as Exprs from "./exprs";
 import * as LayoutProcessor from "./layout-processor";
 import * as Vtree from "./vtree";
 import { CssStyler, XmlDoc } from "./types";
+import { createCssWalkProfile } from "./css-walk-profile";
+import { RepeatIndex } from "./repeat-index";
 
 export class SlipRange {
   endStuckFixed: number;
@@ -457,21 +459,55 @@ export class BoxStack {
   }
 }
 
+/** Shared CSS values can outlive one styler. Mutable escapes taint the realm. */
+export class StyleOwnership {
+  escaped = false;
+}
+const defaultStyleOwnership = new StyleOwnership();
+
 export class StyleStore implements CssCascade.StyleReader {
   private readonly map = new Map<number, CssCascade.ElementStyle>();
+  readonly repeatIndex = new RepeatIndex();
+  revision = 0;
+  private escaped = false;
 
-  constructor(private readonly xmldoc: XmlDoc.XMLDocHolder) {}
+  /** Cascade values are Core-owned; external mutable access disables omission. */
+  get canIndexRepeatingElements(): boolean { return !this.escaped && !this.ownership.escaped; }
+
+  markMutableAccess(): void {
+    this.escaped = true;
+    this.ownership.escaped = true;
+    this.repeatIndex.dispose();
+  }
+
+  constructor(private readonly xmldoc: XmlDoc.XMLDocHolder,
+    private readonly ownership = defaultStyleOwnership) {}
 
   setAt(offset: number, style: CssCascade.ElementStyle): void {
+    this.markMutableAccess();
+    this.storeForLayout(offset, style);
+  }
+
+  /** Internal ownership transfer after cascade; no external alias is retained. */
+  storeForLayout(offset: number, style: CssCascade.ElementStyle): void {
+    this.revision++;
     this.map.set(offset, style);
   }
 
   styleOf(element: Element): CssCascade.ElementStyle {
+    this.markMutableAccess();
+    return this.styleForLayout(element);
+  }
+
+  /** Core readers must not mutate stored properties after cascade. */
+  styleForLayout(element: Element): CssCascade.ElementStyle {
     return this.map.get(this.xmldoc.getElementOffset(element));
   }
 }
 
 export class Styler implements AbstractStyler {
+  /** Allocated only when the benchmark installs its callback. */
+  readonly cssWalkProfile = createCssWalkProfile();
   root: Base.ChildElement;
   last: Base.RootBoundCursor | null;
   rootStyle = {} as CssCascade.ElementStyle;
@@ -528,7 +564,7 @@ export class Styler implements AbstractStyler {
       this.root,
       scope,
       validatorSet,
-      this.styles,
+      { styleOf: (element) => this.styles.styleForLayout(element) },
       mergeValidatorSet,
     );
     this.offsetMap = new SlipMap();
@@ -552,7 +588,7 @@ export class Styler implements AbstractStyler {
         break;
     }
     this.primaryStack.push(true);
-    this.styles.setAt(rootOffset, style);
+    this.styles.storeForLayout(rootOffset, style);
     this.lastOffset++;
     this.replayFlowElementsFromOffset(-1);
   }
@@ -834,7 +870,7 @@ export class Styler implements AbstractStyler {
     const context = this.context;
     const rootOffset = this.xmldoc.getElementOffset(this.root);
     if (offset < rootOffset) {
-      const rootStyle = this.getStyle(this.root, false);
+      const rootStyle = this.readStyleForLayout(this.root, false);
       if (!this.cascade.firstPageType) {
         const rootPageCV = rootStyle["page"] as CssCascade.CascadeValue;
         const rootPageType =
@@ -874,7 +910,7 @@ export class Styler implements AbstractStyler {
             throw new Error("Inconsistent offset");
           }
         }
-        const style = this.getStyle(elem, false);
+        const style = this.readStyleForLayout(elem, false);
         const flowName = style["flow-into"] as CssCascade.CascadeValue;
         if (flowName) {
           const flowNameStr = flowName
@@ -1036,6 +1072,12 @@ export class Styler implements AbstractStyler {
    * @return lookup offset in the document for the next page
    */
   styleUntil(startOffset: number, lookup: number): number {
+    const profile = this.cssWalkProfile;
+    const profileFrom = profile ? this.lastOffset : 0;
+    const profileStart = profile ? performance.now() : 0;
+    const profileElements = profile?.elements ?? 0;
+    const profileChars = profile?.chars ?? 0;
+    try {
     let targetSlippedOffset = -1;
     let slippedOffset: number;
     if (startOffset <= this.lastOffset) {
@@ -1104,6 +1146,7 @@ export class Styler implements AbstractStyler {
       const cursor = next;
       this.last = cursor;
       if (cursor.node.nodeType != 1) {
+        if (profile) profile.chars += cursor.node.textContent.length;
         this.lastOffset += cursor.node.textContent.length;
         this.boxStack.encounteredTextNode(cursor.node);
         if (this.primary) {
@@ -1112,6 +1155,7 @@ export class Styler implements AbstractStyler {
           this.offsetMap.addSlippedRange(this.lastOffset);
         }
       } else {
+        if (profile) profile.elements++;
         const elem = cursor.node as Base.ChildElement;
         const style = this.getAttrStyle(elem);
         this.primaryStack.push(this.primary);
@@ -1213,7 +1257,7 @@ export class Styler implements AbstractStyler {
             throw new Error("Inconsistent offset");
           }
         }
-        this.styles.setAt(this.lastOffset, style);
+        this.styles.storeForLayout(this.lastOffset, style);
         this.lastOffset++;
         if (this.primary) {
           this.offsetMap.addStuckRange(this.lastOffset);
@@ -1238,10 +1282,20 @@ export class Styler implements AbstractStyler {
       }
     }
     return Number.POSITIVE_INFINITY;
+    } finally {
+      if (profile) profile.record(profileFrom, this.lastOffset, performance.now() - profileStart,
+        profile.elements - profileElements, profile.chars - profileChars);
+    }
   }
 
   /** @override */
   getStyle(element: Element, deep: boolean): CssCascade.ElementStyle {
+    this.styles.markMutableAccess();
+    return this.readStyleForLayout(element, deep);
+  }
+
+  /** Internal read: public getStyle still returns the original mutable object. */
+  readStyleForLayout(element: Element, deep: boolean): CssCascade.ElementStyle {
     let offset = this.xmldoc.getElementOffset(element);
     if (deep) {
       offset = this.xmldoc.getNodeOffset(element, 0, true);
@@ -1249,7 +1303,7 @@ export class Styler implements AbstractStyler {
     if (this.lastOffset <= offset) {
       this.styleUntil(offset, 0);
     }
-    return this.styles.styleOf(element);
+    return this.styles.styleForLayout(element);
   }
 
   /** @override */
@@ -1261,3 +1315,9 @@ export class Styler implements AbstractStyler {
 }
 
 export const columnProps = ["column-count", "column-width", "column-fill"];
+
+/** Preserve custom styler implementations without certifying their ownership. */
+export function readStyle(styler: AbstractStyler, element: Element, deep: boolean): CssCascade.ElementStyle {
+  return Object.getPrototypeOf(styler) === Styler.prototype && styler.getStyle === Styler.prototype.getStyle
+    ? (styler as Styler).readStyleForLayout(element, deep) : styler.getStyle(element, deep);
+}

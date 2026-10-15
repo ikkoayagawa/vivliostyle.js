@@ -359,10 +359,7 @@ the carry-over source when no local `triage.yaml` exists yet.
 
 ### Release gate
 
-`yarn version:bump`, `yarn version:graduate`, and `yarn version:prerelease`
-all run `yarn test:layout-regression:triage:check` first, which reads
-`scripts/layout-regression-triage.yaml` and fails (exit 2) if any entry is still
-`regression` or has no decision. Resolve all entries before releasing.
+Before generating a publication snapshot, run `yarn test:layout-regression:triage:check` to check `scripts/layout-regression-triage.yaml`. Resolve regression and pending entries before updating the publication repository.
 
 ## CI integration
 
