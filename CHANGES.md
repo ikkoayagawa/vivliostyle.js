@@ -82,6 +82,48 @@ SVG内にHTML用の句読点補助要素を挿入しないよう修正し、日�
 
 `benchmark/check-svg-reuse.mjs` で、複数ページの日本語文書、SVGの前後・属性・文字の編集、可搬seed経由の更新、対象見開き、原稿位置の版、対象外SVGの除外を確認できます。表・絶対配置・flex・gridの再利用条件は今回変更していません。
 
+#### 箱の中で完結する絶対配置（2026-10-16）
+
+絶対配置を文書単位で一律除外する判定を限定的に緩めました。対象は、次の条件を満たす親子の箱です。
+
+- 親は`display:block; position:relative; break-inside:avoid`、子は`display:block; position:absolute`で、親の直下に置く。
+- 両方に物理的な`width`と`height`、`box-sizing:border-box; overflow:hidden`を指定する。
+- 子の`left`と`top`、両方の寸法はpx/pt/pc/mm/cm/in/qの固定値とし、子が親の幅・高さの範囲に収まる。
+- 両方のmargin/padding/borderは0。right/bottomはauto、親のleft/topはautoまたは0とする。
+- 変形・filter・perspective・contain・アニメーション、論理寸法やmin/maxによる寸法の上書き等は使わない。
+
+```css
+.colophon-box {
+  display: block;
+  position: relative;
+  width: 60mm;
+  height: 40mm;
+  break-inside: avoid;
+  overflow: hidden;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.colophon-content {
+  display: block;
+  position: absolute;
+  left: 5mm;
+  top: 5mm;
+  width: 40mm;
+  height: 20mm;
+  overflow: hidden;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+```
+
+固定配置、auto/割合/フォント相対の寸法、親からはみ出す配置、条件を満たさない親の中の配置は従来通り再組版します。構造・style・再開位置・counter等の他の再利用条件も維持しています。これらのCSS条件は初期の対応範囲であり、任意の絶対配置を扱えることを意味しません。
+
+`benchmark/check-positioned-reuse.mjs`で、縦横の日本語16ページ、前後の空行追加、位置・内容・幅の編集、可搬seed、原稿位置、対象見開き、条件を外した場合の除外を確認できます。表・flex・gridの判定は変更していません。
+
 ### 3. 対象紙面までの組版と見開きの選択
 
 `paginationMode: "target-display-unit"` は、`fragment` 等で指定した対象の紙面が完成すると組版を終了します。`focusedDisplayMode: "singlePage" | "spread"` をDocumentOptionsへ渡すと、対象の単ページまたは隣接する見開きを選べます。見開きでは必要な隣ページも組み、左右両紙面を保持・資源待ち・位置対応の対象にします。文書の境界では片側だけの場合もあります。

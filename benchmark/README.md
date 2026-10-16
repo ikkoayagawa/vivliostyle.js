@@ -21,6 +21,7 @@ npm run build --prefix packages/core
 | スクリプト | 確認すること | ブラウザの選択 |
 | --- | --- | --- |
 | `check-portable-seed.mjs` | seedの書き出し・復元、入力検証、中断、復元後の表示 | `--browser=PATH`。省略時は標準配置のChrome・Edgeを探索 |
+| `check-positioned-reuse.mjs` | 箱内の絶対配置の再利用、原稿位置、可搬seed、対象見開き、非対応条件の除外 | `--browser=PATH`。省略時は標準配置のChrome・Edgeを探索 |
 | `check-svg-reuse.mjs` | 静的SVGを含む文書の再利用、原稿位置、可搬seed、対象見開き、対象外SVGの除外 | `--browser=PATH`。省略時は標準配置のChrome・Edgeを探索 |
 | `check-source-map.mjs` | 原稿位置対応、紙面の保持・複製、seed移送、資源解放 | `--browser=PATH`。省略時は標準配置のChrome・Edgeを探索 |
 | `check-page-search.mjs` | ページ開始位置の探索結果と走査の動作 | PlaywrightのChromium |
@@ -52,3 +53,5 @@ node scripts/check-page-content-style.mjs
 ```
 
 `check-svg-reuse.mjs` は `--output=PATH` で結果を保存できます。検証用依存を別フォルダーに用意している場合は `--modules=PATH` で、そのpackage.jsonがあるディレクトリを指定できます。
+
+`check-positioned-reuse.mjs` も `--output=PATH` と `--modules=PATH` に対応します。

@@ -7,6 +7,7 @@ import * as Vtree from "./vtree";
 import { copySourceFragments, prepareSourceFragmentRemap } from "./source-map";
 import type { OPFViewItem } from "./epub";
 import { isStaticSelfContainedSvg, isStaticSvgStyle } from "./preview-svg";
+import { isContainedAbsolute } from "./preview-positioned";
 import { createPreviewBoundaryIndex, findPreviewBoundary } from "./preview-boundary-index";
 import {
   comparePreviewDocuments,
@@ -394,7 +395,8 @@ export function analyzePreviewReuse(item: OPFViewItem): PreviewReuseAnalysis {
       if (
         name === "position" &&
         !["static", "relative"].includes(text) &&
-        !isHiddenZeroSizedAbsolute(style)
+        !isHiddenZeroSizedAbsolute(style) &&
+        !isContainedAbsolute(element, style, parent => CssStyler.readStyle(item.instance.styler, parent, false))
       )
         blockers.add("positioned-content");
       if (name === "column-count" && !["auto", "1"].includes(text))
