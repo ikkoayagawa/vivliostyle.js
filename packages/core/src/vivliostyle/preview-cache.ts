@@ -6,6 +6,7 @@ import * as CssStyler from "./css-styler";
 import * as Vtree from "./vtree";
 import { copySourceFragments, prepareSourceFragmentRemap } from "./source-map";
 import type { OPFViewItem } from "./epub";
+import { isStaticSelfContainedSvg, isStaticSvgStyle } from "./preview-svg";
 import { createPreviewBoundaryIndex, findPreviewBoundary } from "./preview-boundary-index";
 import {
   comparePreviewDocuments,
@@ -341,10 +342,13 @@ export function analyzePreviewReuse(item: OPFViewItem): PreviewReuseAnalysis {
     blockers.add("named-flow-or-float");
   if (
     item.xmldoc.body.querySelector(
-      "svg,math,table,script,style,link,iframe,object,video,audio,aside",
+      "math,table,script,style,link,iframe,object,video,audio,aside",
     )
   )
     blockers.add("embedded-content");
+  for (const svg of Array.from(item.xmldoc.body.querySelectorAll("svg"))) {
+    if (!isStaticSelfContainedSvg(svg)) blockers.add("embedded-content");
+  }
   // Portable image paper must not retain a process-owned Blob URL or depend
   // on bytes that can change outside the caller's compatibility key.
   for (const image of item.xmldoc.body.querySelectorAll("img")) {
@@ -374,6 +378,8 @@ export function analyzePreviewReuse(item: OPFViewItem): PreviewReuseAnalysis {
     if (Array.isArray(conditional) && conditional.length)
       blockers.add("conditional-style");
     const signature = styleSignature(style);
+    if (element.namespaceURI === "http://www.w3.org/2000/svg" && !isStaticSvgStyle(signature))
+      blockers.add("embedded-content");
     if (forbidden.test(signature))
       blockers.add("dependent-generated-content");
     for (const [name, value] of Object.entries(style)) {

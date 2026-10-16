@@ -1454,6 +1454,14 @@ export class AdaptiveViewer {
             this.currentPage = page;
             return Task.newResult(null);
           }
+          // Focused layout has no later commit to connect restored page clones.
+          // getSpread can return a detached cached partner as well as the target.
+          if (this.previewSession?.paginationMode === "target-display-unit") {
+            for (const candidate of [spread.left, spread.right]) {
+              if (candidate && !candidate.container.isConnected)
+                this.viewport.contentContainer.appendChild(candidate.container);
+            }
+          }
           this.showSpread(spread);
           this.setSpreadZoom(spread);
           this.currentPage =

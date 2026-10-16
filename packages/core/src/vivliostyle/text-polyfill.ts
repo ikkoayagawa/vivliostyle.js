@@ -862,6 +862,9 @@ class TextSpacingPolyfill {
     lang: string | null,
     vertical: boolean,
   ): number {
+    // Match preprocessing: HTML spacing wrappers are not SVG/MathML nodes.
+    // Inserting them into SVG changes namespaces when paper is serialized.
+    if (textNode.parentElement?.namespaceURI !== Base.NS.XHTML) return 0;
     const text = textNode.textContent;
     let columnOver = 0;
 

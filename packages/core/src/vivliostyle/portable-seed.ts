@@ -186,7 +186,7 @@ export function restorePortableSourceBoundaries(
     )
       throw new PortableSeedError(
         "source",
-        "Portable source structure mismatch",
+        `Portable source structure mismatch: expected ${saved?.[1] ?? "missing"}, received ${node.nodeName}`,
       );
     const parsed = Array.from(node.childNodes),
       restored: Node[] = [];
