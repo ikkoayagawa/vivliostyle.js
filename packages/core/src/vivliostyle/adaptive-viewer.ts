@@ -429,6 +429,7 @@ export class AdaptiveViewer {
   pageViewMode: PageViewMode = PageViewMode.SINGLE_PAGE;
   waitForLoading: boolean = false;
   renderAllPages: boolean = true;
+  fixedEmphasisLeading: boolean = false;
   pref: Exprs.Preferences = Exprs.defaultPreferences();
   pageSizes: { width: number; height: number }[] = [];
 
@@ -827,6 +828,10 @@ export class AdaptiveViewer {
     }
     if (typeof command["renderAllPages"] == "boolean") {
       this.renderAllPages = command["renderAllPages"];
+    }
+    if (typeof command["fixedEmphasisLeading"] === "boolean" && command["fixedEmphasisLeading"] !== this.fixedEmphasisLeading) {
+      this.fixedEmphasisLeading = command["fixedEmphasisLeading"];
+      this.needResize = true;
     }
     // for backward compatibility
     if (typeof command["userAgentRootURL"] == "string") {
@@ -1385,6 +1390,7 @@ export class AdaptiveViewer {
     this.pageSizes = [];
     this.removePageSizePageRules();
     this.viewport = this.createViewport();
+    this.viewport.fixedEmphasisLeading = this.fixedEmphasisLeading;
     this.viewport.resetZoom();
     this.opfView = new Epub.OPFView(
       this.opf,

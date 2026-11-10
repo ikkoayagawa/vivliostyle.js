@@ -19,6 +19,7 @@
  * @fileoverview Vtree - Basic view tree data structures and support utilities.
  */
 import * as Base from "./base";
+import {paintFixedEmphasis} from "./fixed-emphasis";
 import * as Break from "./break";
 import * as Constants from "./constants";
 import * as Css from "./css";
@@ -231,6 +232,8 @@ export class Page extends Base.SimpleEventTarget {
       }
       Base.setCSSProperty(item.target, item.name, item.value.toString());
     }
+
+    paintFixedEmphasis(this.container);
 
     // use size of the container of the PageMasterInstance
     const rect = clientLayout.getElementClientRect(this.container);

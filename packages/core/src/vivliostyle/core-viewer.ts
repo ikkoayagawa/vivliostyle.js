@@ -155,6 +155,8 @@ export type CoreViewerOptions = {
   fontSize?: number;
   pageBorderWidth?: number;
   renderAllPages?: boolean;
+  /** Paint emphasis outside line boxes for interactive preview. Default: false. */
+  fixedEmphasisLeading?: boolean;
   pageViewMode?: AdaptiveViewer.PageViewMode;
   zoom?: number;
   fitToScreen?: boolean;
@@ -173,6 +175,7 @@ function getDefaultViewerOptions(): CoreViewerOptions {
     fontSize: 16,
     pageBorderWidth: 1,
     renderAllPages: true,
+    fixedEmphasisLeading: false,
     pageViewMode: AdaptiveViewer.PageViewMode.AUTO_SPREAD,
     zoom: 1,
     fitToScreen: false,

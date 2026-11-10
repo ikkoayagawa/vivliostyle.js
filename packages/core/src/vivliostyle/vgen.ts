@@ -22,6 +22,7 @@
  */
 import * as Asserts from "./asserts";
 import * as Base from "./base";
+import {prepareFixedEmphasis} from "./fixed-emphasis";
 import * as Break from "./break";
 import * as Css from "./css";
 import * as CssCascade from "./css-cascade";
@@ -2367,6 +2368,7 @@ export class ViewFactory
 
         this.preprocessElementStyle(nodeContext, computedStyle);
         this.applyComputedStyles(result, computedStyle);
+        prepareFixedEmphasis(result as HTMLElement, computedStyle, this.viewport.fixedEmphasisLeading);
         RubyEmphasis.registerViewContext(result, nodeContext, position);
         if (computedStyle["ruby-position"]) {
           result.setAttribute(
@@ -4509,6 +4511,7 @@ export class Viewport {
   scaleRatio: number = 1;
   layoutUnitPerPixel: number = 64;
   layoutUnitAdj: number = 0;
+  fixedEmphasisLeading: boolean = false;
 
   constructor(
     public readonly window: Window,

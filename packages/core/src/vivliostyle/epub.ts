@@ -4181,6 +4181,8 @@ export class OPFView implements Vgen.CustomRendererFactory {
           viewportSize.height,
         );
       }
+      // A font-size/viewport override creates a separate layout viewport.
+      viewport.fixedEmphasisLeading = this.viewport.fixedEmphasisLeading;
       const isVersoFirstPage = this.spineItems[0]?.instance.isVersoFirstPage;
       const previousViewItem = this.spineItems[spineIndex - 1];
       let pageNumberOffset: number;
